@@ -287,6 +287,6 @@ model_surveys_ef <- model_surveys %>%
 yoy_ef <- model_surveys_ef %>%
   select(!c(site_id, nhdhr.id, lagos.id, acres, shore_mi, infested))
 
-#write.csv(yoy_ef, "./data/yoy_catch_data.csv", row.names = F)
+#write.csv(yoy_ef, "./cleaned_data/yoy_catch_data.csv", row.names = F)
 ```
 

@@ -9,6 +9,7 @@ output: html_document
 library(tidyverse)
 library(sf)
 library(arrow)
+library(mnsentinellakes)
 
 select <- dplyr::select
 options(scipen = 999)
@@ -240,21 +241,22 @@ missing.ages %>%
   group_by(survey_id, est.age) %>% count() %>% filter(n>1)
 
 # Only select 3-year old fish
-walleye_anomaly_ages <-  rbind(walleye_anomaly, missing.ages) %>%
+walleye_ages <-  rbind(walleye_anomaly, missing.ages) %>%
   mutate(lake.id = as.factor(mnsentinellakes::fixlakeid(lake.id))) %>%
   filter(est.age == 3)
 
-walleye_anomaly_ages %>% 
+walleye_ages %>% 
   group_by(survey_id, est.age) %>% count() %>% filter(n>1)
 
 
 ```
 
 
+
 # Add covariate data
 ```{r}
 st_crs(mn_lakes) <- 26915
-mn_gn_lakes <- mn_lakes %>% dplyr::filter(dowlknum %in% walleye_anomaly_ages$lake.id)
+mn_gn_lakes <- mn_lakes %>% dplyr::filter(dowlknum %in% walleye_ages$lake.id)
 
 mn_gn_lakes <- st_as_sf(x = mn_lakes,                         
                   coords = c("x", "y"),
@@ -268,7 +270,7 @@ mn_gn_lakes_clean <- as.data.frame(mn_gn_lakes) %>%
   dplyr::filter(pw_basin_n != "Mississippi River - Pepin (WI)") %>%
   rename(lake.id = dowlknum) %>% distinct(lake.id, .keep_all = T)
 
-gn_spatial <- merge(x = walleye_anomaly_ages, y = mn_gn_lakes_clean, 
+gn_spatial <- merge(x = walleye_ages, y = mn_gn_lakes_clean, 
                     by = "lake.id", all.x = T)
 
 
@@ -318,11 +320,16 @@ gn_ais <- merge(x = gn_stocking, y = ais,
 # Add in GDD
 ```{r}
 current_temps <- read_feather("./data/lake_temperature_metrics_GLM_NLDAS.feather") %>% 
-  dplyr::select(site_id, year, gdd_wtr_0c, gdd_wtr_5c, gdd_wtr_10c)
+  dplyr::select(site_id, year, gdd_wtr_5c)
 
 average_temps <- current_temps %>% 
   group_by(site_id) %>% 
-  summarize(median_gdd_0 = median(gdd_wtr_0c), median_gdd_5 = median(gdd_wtr_5c))
+  summarize(median_gdd_5 = median(gdd_wtr_5c))
+
+
+all_temps <- merge(current_temps, average_temps, by = c("site_id")) %>%
+  mutate(anomaly_gdd_5 = gdd_wtr_5c - median_gdd_5)
+hist(all_temps$anomaly_gdd_5)
 
 dow_year <- gn_ais %>% distinct(lake.id, year)
 
@@ -341,38 +348,42 @@ surveys_no_temp <- merge(gn_ais, dow_nhdhr,
                          by.x = c("lake.id"),
                          by.y = c("lake_id"), all.x = T)
 
-filtered_temp <- current_temps %>% 
+filtered_temp <- all_temps %>% 
   dplyr::filter(site_id %in% surveys_no_temp$site_id) %>%
-  rename(gdd_wtr_0c_year3 = gdd_wtr_0c,
-         gdd_wtr_5c_year3 = gdd_wtr_5c,
-         gdd_wtr_10c_year3 = gdd_wtr_10c)
+  select(site_id, year, median_gdd_5, everything()) %>%
+  rename(gdd_wtr_5c_anomaly_year3 = anomaly_gdd_5,
+         gdd_wtr_5c_year3 = gdd_wtr_5c
+         )
 
-temp_year2 <- current_temps %>% 
+temp_year2 <- all_temps %>% 
   dplyr::filter(site_id %in% surveys_no_temp$site_id) %>%
+  select(!median_gdd_5) %>%
   mutate(year = year+1) %>%
-  rename(gdd_wtr_0c_year2 = gdd_wtr_0c,
-         gdd_wtr_5c_year2 = gdd_wtr_5c,
-         gdd_wtr_10c_year2 = gdd_wtr_10c)
+  rename(gdd_wtr_5c_anomaly_year2 = anomaly_gdd_5,
+         gdd_wtr_5c_year2 = gdd_wtr_5c
+         )
 
-temp_year1 <- current_temps %>% 
+temp_year1 <- all_temps %>% 
   dplyr::filter(site_id %in% surveys_no_temp$site_id) %>%
+  select(!median_gdd_5) %>%
   mutate(year = year+2) %>%
-  rename(gdd_wtr_0c_year1 = gdd_wtr_0c,
-         gdd_wtr_5c_year1 = gdd_wtr_5c,
-         gdd_wtr_10c_year1 = gdd_wtr_10c)
+  rename(gdd_wtr_5c_anomaly_year1 = anomaly_gdd_5,
+         gdd_wtr_5c_year1 = gdd_wtr_5c
+         )
 
-temp_year0 <- current_temps %>% 
+temp_year0 <- all_temps %>% 
   dplyr::filter(site_id %in% surveys_no_temp$site_id) %>%
+  select(!median_gdd_5) %>%
   mutate(year = year + 3) %>%
-  rename(gdd_wtr_0c_year0 = gdd_wtr_0c,
-         gdd_wtr_5c_year0 = gdd_wtr_5c,
-         gdd_wtr_10c_year0 = gdd_wtr_10c)
+  rename(gdd_wtr_5c_anomaly_year0 = anomaly_gdd_5,
+         gdd_wtr_5c_year0 = gdd_wtr_5c
+         )
 
 surveys_ef <- merge(x = surveys_no_temp , y = filtered_temp, 
                     by = c("site_id", "year"), all.x = T) %>%
   merge(y = temp_year2, by = c("site_id", "year"), all.x = T) %>%
   merge(y = temp_year1, by = c("site_id", "year"), all.x = T) %>%
-  merge(y = temp_year0, by = c("site_id", "year"), all.x = T) %>%
+  merge(y = temp_year0, by = c("site_id", "year"), all.x = T) #%>%
   merge(y = average_temps, by = c("site_id"), all.x = T)
 ```
 
@@ -393,6 +404,5 @@ year_3_fish <- surveys_ef %>% filter(year < 2022) %>%
 
 # remove big objects
 ```{r}
-rm(adult_walleye); rm(adult_walleye_age); rm(good_surveys); rm(good_surveys_hive); 
-rm(mn_lakes): rm(adult_walleye_cpue_aged)
+rm(adult_walleye); rm(adult_walleye_age); rm(good_surveys); rm(good_surveys_hive); rm(mn_lakes)
 ```
