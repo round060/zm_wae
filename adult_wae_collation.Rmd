@@ -1,0 +1,491 @@
+---
+title: "adult_wae_collation"
+author: "Chris Rounds"
+date: "10/29/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(sf)
+library(arrow)
+library(mnsentinellakes)
+
+select <- dplyr::select
+options(scipen = 999)
+set.seed(999)
+sf_use_s2(FALSE) # we dont like spheres
+
+#filters for metric (adult abundance) and selects columns needed for survey filtering
+filter_table_effort <- read_csv("./data/Fish_Climate_Filtering.csv") %>% 
+  filter(metric == "adult_abundance" & state == "Minnesota" & 
+           species_1 == "walleye") %>%
+  mutate(month_min = 4) %>%
+  filter(sampling_method != "Standard 3/4-in mesh, double frame trap net sets") %>%
+  rename(survey.type = survey_type,
+         sampling.method = sampling_method,
+         area.group = area_group) %>% 
+  select(-metric,
+         -species_1,
+         -water_temp_min,
+         -water_temp_max,
+         -target_species_1,
+         -target_species_2,
+         -survey_type_effort)
+
+#selects fish level filters to be applied in the second filtering step
+filter_table_fish <- 
+  read_csv("https://docs.google.com/spreadsheets/d/e/2PACX-1vSkGZinLPrSuv1DorBrAkV2JNUZsOlpG7jk_WsnGyZX56z9JMVcGHdCPlsxInjOdjUH0tXb4nBwt9Js/pub?output=csv") %>% 
+  filter(metric == "adult_abundance" & state == "Minnesota" & 
+           species_1 == "walleye") %>% 
+  #fish level parameters of interest 
+  select(state) %>% 
+  distinct() 
+```
+
+
+# Read in some fun data
+```{r}
+#this dataset covers all lengthed fish from the big 8 species we targeted in the project
+aged <- open_dataset("./data/age_assigned_data/mn_halk_aged_data/part-0.parquet") %>% collect() 
+
+mn_lakes <- readRDS("./data/mndow_lakes_sf_allDataUntransformed.rds")
+
+stocking <- read.csv("./data/mn_wae_stocking.csv") %>%
+  rename(lake.id = DOW, year = Year) %>%
+  mutate(non.fry = fgl.pa + adl.pa + yrl.pa + frl.pa,
+         lake.id = mnsentinellakes::fixlakeid(lake.id),
+         non.fry = ifelse(is.na(non.fry), 0, non.fry)) %>%
+  dplyr::select(lake.id, year, non.fry)
+
+stocking_summarized <- stocking %>% group_by(lake.id, year) %>%
+  summarize(non.fry = sum(non.fry), latest = max(year))
+```
+
+
+# Collect surveys
+```{r}
+# Get good surveys
+good_surveys_any_alk <- aged %>% 
+  right_join(filter_table_effort, by = c("state",
+                                        "survey.type",
+                                        "sampling.method",
+                                        "area.group")) %>% 
+  distinct(lake.id,
+           date,
+           survey.type,
+           sampling.method,
+           total.effort.1,
+           effort.units,
+           area.group,
+           effort_min,
+           month_min,
+           month_max, 
+           alk) %>% 
+  filter(total.effort.1 >= effort_min,
+         month(date) >= month_min,
+         month(date) <= month_max
+         ) %>% 
+  collect()
+
+adult_walleye_age_any_alk <- aged %>% 
+  right_join(good_surveys_any_alk) %>% 
+  #filter for fish level items (length, etc)
+  right_join(filter_table_fish) %>% 
+  collect() %>%
+  mutate(survey_id = str_c(lake.id, year, total.effort.1, sampling.method)) %>%
+  select(lake.name, lake.id, nhdhr.id, date, year,
+         total.effort.1, effort.ident, survey.type, sample.id,
+         sampling.method, total.effort.1, survey_id, species, age, alk, est.age, alk.n)
+
+# Collect surveys with zero walleye caught
+adult_walleye_zeroes <- adult_walleye_age_any_alk %>% 
+  #grouping by variables to get survey fish count 
+  group_by(lake.id,
+           date,
+           survey.type,
+           sampling.method,
+           total.effort.1) %>% 
+  #counts fish of a particular species in a survey 
+  mutate(count = sum(species == 'walleye'), age = 3, aged = 0) %>% 
+  filter(count == 0) %>% 
+  select(!species) %>%
+  distinct(lake.name, lake.id, date, year, total.effort.1,  
+           survey.type, sampling.method, total.effort.1,
+           count, .keep_all = T) %>% 
+  select(lake.name, lake.id, nhdhr.id, date, year, total.effort.1, sample.id,
+         survey.type, sampling.method, total.effort.1, 
+         effort.ident, count, aged, alk, alk.n) %>%
+  mutate(proportion_aged = ifelse(count == 0, 1, aged/count),
+         all_aged = ifelse(proportion_aged == 1, 1, 0)) %>% ungroup()
+
+#creating cpue for species of interest
+adult_walleye_cpue_any_alk <- adult_walleye_age_any_alk %>% 
+  #grouping by variables to get survey fish count 
+  group_by(lake.id,
+           date,
+           survey.type,
+           sampling.method,
+           total.effort.1) %>% 
+  #counts fish of a particular species in a survey 
+  mutate(count = sum(species == 'walleye')) %>% 
+  #surveys that did not catch fish (species column is na) return a catch of 0
+  mutate(count = case_when(is.na(species) ~ 0,
+                           TRUE ~ count)) %>% 
+  #generates cpue from counts and efforts associated with that survey count
+  mutate(cpue = count/as.numeric(total.effort.1)) %>%
+  filter(species == "walleye") %>%
+  mutate(sample.id = ifelse(is.na(sample.id), 0, sample.id )) %>%
+  filter(sample.id >= 0) %>%
+  mutate(
+    aged.logical = ifelse(!is.na(age), 1, 0),
+    aged = sum(aged.logical)) %>%
+  ungroup() %>%
+  distinct(lake.name, lake.id, date, year, total.effort.1,  
+           survey.type, sampling.method, total.effort.1,
+           count, cpue, .keep_all = T) %>%
+  select(lake.name, lake.id, nhdhr.id, date, year, total.effort.1, 
+         survey.type, sampling.method, total.effort.1, sample.id,
+         effort.ident, count, aged, alk, alk.n) %>%
+  mutate(proportion_aged = ifelse(count == 0, 1, aged/count),
+         all_aged = ifelse(proportion_aged == 1, 1, 0))
+
+# All data together
+adult_walleye_cpue <- rbind(adult_walleye_cpue_any_alk, adult_walleye_zeroes)
+  
+# Check how much of different data we have
+
+
+all_aged <- adult_walleye_cpue %>% filter(all_aged == 1)
+# 2638
+
+not_all_aged_year_alk <- adult_walleye_cpue %>% filter(all_aged == 0) %>% filter(alk == "year")
+#603
+
+not_all_aged_lake_alk <- adult_walleye_cpue %>% filter(all_aged == 0) %>% filter(alk == "lake.id")
+#2122
+
+less_suitable <- adult_walleye_cpue %>% filter(all_aged == 0) %>% filter(alk != "year") %>%
+  select(lake.name, lake.id, year, survey.type, sampling.method, effort.ident, count, aged, proportion_aged)
+
+walleye_survey_cpue <- rbind(all_aged, not_all_aged_lake_alk, not_all_aged_year_alk) %>% filter(year > 2005) %>%
+  mutate(survey_id = str_c(lake.id, year, total.effort.1, sampling.method))
+
+
+
+
+long <- walleye_survey_cpue %>% distinct(lake.id, year) %>% group_by(lake.id) %>% 
+  summarize(n = n()) #%>% filter(n > 4)
+
+id = unique(walleye_survey_cpue$lake.id)
+effort_id = unique(walleye_survey_cpue$survey_id)
+```
+
+
+# Now collect fish
+```{r}
+adult_walleye_age <- aged %>% filter(effort.ident %in% walleye_survey_cpue$effort.ident) %>% 
+  filter(species == "walleye") %>%
+  mutate(survey_id = str_c(lake.id, year, total.effort.1, sampling.method)) %>% 
+    dplyr::select(lake.name, lake.id, nhdhr.id, date, year, 
+                total.effort.1, effort.ident, survey.type,
+                sampling.method, survey_id, species, est.age, age)
+```
+
+
+
+
+# filter for appropriate MISSING FISH from surveys
+Some fish are not lengthed during a survey, these fish are not aged and thus not in the HALK data. I can get these fish from the MW hive, randomly sample from the distribution of ages (of that survey) and then add them back into the dataset
+```{r}
+mw_data <- open_dataset("./data/hive", partitioning = c("state")) 
+#glimpse(mw_data)
+
+filter_table_effort_hive <- filter_table_effort %>%
+  rename(survey_type = survey.type,
+         sampling_method = sampling.method,
+         area_group =area.group)
+
+'good_surveys_hive <- mw_data %>% 
+  filter(state == "Minnesota") %>%
+  right_join(filter_table_effort_hive, by = c("state",
+                                        "survey_type",
+                                        "sampling_method",
+                                        "area_group")) %>% 
+  distinct(lake_id,
+           survey_type,
+           sampling_method,
+           total_effort_ident,
+           total_effort_1,
+           total_effort_1_units,
+           year,
+           area_group,
+           effort_min,
+           month,
+           month_min,
+           month_max) %>% 
+  collect() %>% 
+  mutate(survey_id = str_c(lake_id, year, total_effort_1)) %>%
+  filter(total_effort_1 >= effort_min,
+         month >= month_min,
+         month <= month_max,
+         effort_id %in% effort_id)'
+  
+
+
+
+adult_walleye <- mw_data %>%
+  filter(state == "Minnesota") %>% 
+  filter(species_1 == "walleye") %>% 
+  collect() %>%
+  mutate(survey_id = str_c(lake_id, year, total_effort_1, sampling_method)) %>%
+  filter(survey_id %in% effort_id) %>%
+  filter(is.na(length_1)) %>%
+  dplyr::select(lake_name, lake_id, nhdhr_id, date_survey, year, 
+                total_effort_1, total_effort_ident, survey_type,
+                sampling_method, survey_id, species_1, age_class) %>%
+  collect() %>%
+  mutate(est.age = ifelse(age_class == "young_of_year", 0, NA)) %>%
+  select(!age_class) #%>%  drop_na(lake_name)
+  
+  
+  
+unaged_id <- unique(adult_walleye$survey_id)
+
+# For each walleye that is unaged
+for ( i in 1:nrow(adult_walleye)){
+  # Get the ages of the walleye from the survey of the unaged walleye
+  walleye_visit = adult_walleye_age %>% 
+    filter(survey_id == adult_walleye$survey_id[i]) %>%
+    select(est.age)
+  # If the fish is unaged (isn't age-0) and the survey exists in the halk data
+  if (is.na(adult_walleye$est.age[i]) && nrow(walleye_visit) > 0){
+    adult_walleye$est.age[i]  <- sample(walleye_visit$est.age, size = 1)
+    adult_walleye$age[i] <- adult_walleye$est.age[i]
+  }
+}
+
+colnames(adult_walleye) <- colnames(adult_walleye_age)
+adult_walleye_age <- rbind(adult_walleye, adult_walleye_age)
+
+#creating cpue for species of interest
+adult_walleye_cpue_aged <- adult_walleye_age %>% 
+  #grouping by variables to get survey fish count 
+  group_by(lake.id,
+           date,
+           survey.type,
+           sampling.method,
+           total.effort.1) %>% 
+  #counts fish of a particular species in a survey 
+  mutate(age = ifelse(is.na(age), est.age, age), 
+         age3_count = sum(age == 3)) %>% 
+  #generates cpue from counts and efforts associated with that survey count
+  mutate(cpue = age3_count/as.numeric(total.effort.1)) %>%
+  ungroup() %>%
+  distinct(lake.name, lake.id, date, year, total.effort.1,  
+           survey.type, sampling.method, total.effort.1, age3_count, cpue, .keep_all = T) %>%
+  collect() %>%
+  select(lake.name, lake.id, date, year, total.effort.1, 
+         survey.type, sampling.method, total.effort.1, effort.ident, age3_count, cpue, survey_id) %>%
+  mutate(age = 3, 
+         birth.year = year - age, 
+         julian_day = yday(date))
+
+# surveys not in the age-3 catch data. This = the number of zeroes
+temp_zeroes <- walleye_survey_cpue %>% filter(!survey_id %in% adult_walleye_cpue_aged$survey_id) %>% 
+  mutate(age3_count = 0, cpue = 0, age = 3,
+         birth.year = year - age, 
+         julian_day = yday(date)) %>%
+  select(colnames(adult_walleye_cpue_aged))
+
+age3_walleye_surveys <- rbind(adult_walleye_cpue_aged, temp_zeroes) %>% 
+  mutate(lake.id = fixlakeid(lake.id))
+
+
+
+
+```
+
+
+# Sanity checks 
+```{r}
+# weird but in all of these surveys (n=4) they seem to have gillnetted more than once in a lake
+age3_walleye_surveys %>% group_by(survey_id) %>% count() %>% filter(n > 1)
+
+
+# These statements must be true or something has gone terribly, horribly wrong
+length(unique(age3_walleye_surveys$survey_id)) == length(unique(walleye_survey_cpue$survey_id))
+length(unique(age3_walleye_surveys$lake.id)) == length(unique(walleye_survey_cpue$lake.id))
+sum(age3_walleye_surveys$survey_id %in% walleye_survey_cpue$survey_id) == nrow(walleye_survey_cpue)
+
+
+age3_walleye_surveys %>% filter(!survey_id %in% walleye_survey_cpue$survey_id)
+walleye_survey_cpue %>% filter(!survey_id %in% age3_walleye_surveys$survey_id)
+```
+
+
+
+# Add covariate data
+```{r}
+st_crs(mn_lakes) <- 26915
+mn_gn_lakes <- mn_lakes %>% dplyr::filter(dowlknum %in% age3_walleye_surveys$lake.id)
+
+mn_gn_lakes <- st_as_sf(x = mn_lakes,                         
+                  coords = c("x", "y"),
+                  crs = "+proj=utm +zone=15")
+mn_gn_lakes = st_transform(mn_lakes, crs = "+proj=longlat +datum=WGS84")
+mn_gn_lakes$x <- st_coordinates(st_centroid(st_as_sf(mn_gn_lakes)))[,"X"]
+mn_gn_lakes$y <- st_coordinates(st_centroid(st_as_sf(mn_gn_lakes)))[,"Y"]
+
+mn_gn_lakes_clean <- as.data.frame(mn_gn_lakes) %>% 
+  select("dowlknum", "pw_basin_n","acres","wb_class", "shore_mi", "x", "y") %>%
+  dplyr::filter(pw_basin_n != "Mississippi River - Pepin (WI)") %>%
+  rename(lake.id = dowlknum) %>% distinct(lake.id, .keep_all = T)
+
+gn_spatial <- merge(x = age3_walleye_surveys, y = mn_gn_lakes_clean, 
+                    by = "lake.id", all.x = T)
+
+
+stocking_baby <- read.csv("./data/mn_wae_stocking.csv") %>% 
+  rename(lake_id = DOW, year = Year) %>%
+  mutate(lake_id = ifelse(lake_id == "04003500", "04003501", lake_id),
+         recruit.year = year + 3) %>%
+  select(lake_id, recruit.year, FRY, FGL)
+
+
+gn_stocking <- merge(x = gn_spatial, y = stocking_baby, 
+                     by.x = c("lake.id", "year"), 
+                     by.y = c("lake_id", "recruit.year"),
+                     all.x = T) %>%
+  mutate(across(FRY:FGL, ~ ifelse(is.na(.), 0, .))) 
+
+
+ais <- readxl::read_excel("./data/infested-waters.xlsx") %>% 
+  dplyr::filter(ais == "zebra mussel") %>% select(!Column1) %>%
+  dplyr::filter(dow != "NA", dow != "na") %>%
+  dplyr::filter(!grepl("none", dow) ) %>%
+  mutate(lake_id = fixlakeid(dow),
+         lake_id = str_pad(lake_id, width = 8, side = "right", pad = "0")) %>%
+  dplyr::rename(year.listed = year) %>%
+  select(lake_id, year.listed, year_confirmed, ais) %>% 
+  filter(year.listed <= 2022)
+
+gn_ais <- merge(x = gn_stocking, y = ais, 
+                         by.x = "lake.id", by.y = "lake_id",
+                all.x = T) %>%
+  mutate(ais = ifelse(is.na(ais), 0, 1),
+         year_confirmed = as.numeric(year.listed),
+         year_confirmed = ifelse(is.na(year_confirmed), NA, year_confirmed),
+         infested = ifelse(year_confirmed <= year, 1, 0),
+         ) %>%
+  dplyr::select(!c(ais))
+```
+
+# Add in GDD
+```{r}
+current_temps <- read_feather("./data/lake_temperature_metrics_GLM_NLDAS.feather") %>% 
+  dplyr::select(site_id, year, gdd_wtr_5c)
+
+average_temps <- current_temps %>% 
+  group_by(site_id) %>% 
+  summarize(median_gdd_5 = median(gdd_wtr_5c))
+
+
+all_temps <- merge(current_temps, average_temps, by = c("site_id")) %>%
+  mutate(anomaly_gdd_5 = gdd_wtr_5c - median_gdd_5)
+hist(all_temps$anomaly_gdd_5)
+
+dow_year <- gn_ais %>% distinct(lake.id, year)
+
+dow_nhdhr <- readRDS("./data/mndow_nhdhr_xwalk.rds") %>% rename(lake_id = MNDOW_ID) %>%
+  mutate(lake_id = gsub("^.{0,6}", "", lake_id))
+
+missing_ids <- data.frame(
+  lake_id = c("69069400", "69060800", "38053200", "38021100", "16063300"), 
+  site_id = c("nhdhr_120019354", "nhdhr_80993113", 
+               "nhdhr_72d19d48-754d-459b-a1f2-b1cfd8993b06", "nhdhr_80993749", 
+               "nhdhr_120019082"))
+
+dow_nhdhr = dow_nhdhr %>% rows_update(y = missing_ids, by = c("lake_id"))
+
+surveys_no_temp <- merge(gn_ais, dow_nhdhr, 
+                         by.x = c("lake.id"),
+                         by.y = c("lake_id"), all.x = T)
+
+filtered_temp <- all_temps %>% 
+  dplyr::filter(site_id %in% surveys_no_temp$site_id) %>%
+  select(site_id, year, median_gdd_5, everything()) %>%
+  rename(gdd_wtr_5c_anomaly_year3 = anomaly_gdd_5,
+         gdd_wtr_5c_year3 = gdd_wtr_5c
+         )
+
+temp_year2 <- all_temps %>% 
+  dplyr::filter(site_id %in% surveys_no_temp$site_id) %>%
+  select(!median_gdd_5) %>%
+  mutate(year = year+1) %>%
+  rename(gdd_wtr_5c_anomaly_year2 = anomaly_gdd_5,
+         gdd_wtr_5c_year2 = gdd_wtr_5c
+         )
+
+temp_year1 <- all_temps %>% 
+  dplyr::filter(site_id %in% surveys_no_temp$site_id) %>%
+  select(!median_gdd_5) %>%
+  mutate(year = year+2) %>%
+  rename(gdd_wtr_5c_anomaly_year1 = anomaly_gdd_5,
+         gdd_wtr_5c_year1 = gdd_wtr_5c
+         )
+
+temp_year0 <- all_temps %>% 
+  dplyr::filter(site_id %in% surveys_no_temp$site_id) %>%
+  select(!median_gdd_5) %>%
+  mutate(year = year + 3) %>%
+  rename(gdd_wtr_5c_anomaly_year0 = anomaly_gdd_5,
+         gdd_wtr_5c_year0 = gdd_wtr_5c
+         )
+
+surveys_gn <- merge(x = surveys_no_temp , y = filtered_temp, 
+                    by = c("site_id", "year"), all.x = T) %>%
+  merge(y = temp_year2, by = c("site_id", "year"), all.x = T) %>%
+  merge(y = temp_year1, by = c("site_id", "year"), all.x = T) %>%
+  merge(y = temp_year0, by = c("site_id", "year"), all.x = T)
+```
+
+
+#1618 total surveys
+#763 lake surveys
+#337 lake-year surveys
+```{r}
+year_3_fish <- surveys_gn %>% filter(year < 2022) %>%
+  mutate(year.listed = ifelse(is.na(year.listed), 0, year.listed),
+         year_confirmed = ifelse(is.na(year_confirmed), 0, year_confirmed),
+         infested = ifelse(is.na(infested), 0, infested)) %>%
+  #drop_na() %>%
+  select(!site_id)
+  
+unique(year_3_fish$lake.id)
+
+#write.csv(year_3_fish, "./cleaned_data/year_3_fish_lake_age_alk.csv", row.names = F)
+year_3_fish <- read.csv("./cleaned_data/year_3_fish_lake_age_alk.csv")
+```
+
+
+# remove big objects
+```{r}
+# All should have ~ same correlation
+with(year_3_fish, cor(median_gdd_5, gdd_wtr_5c_year3))
+with(year_3_fish, cor(median_gdd_5, gdd_wtr_5c_year2))
+with(year_3_fish, cor(median_gdd_5, gdd_wtr_5c_year1))
+with(year_3_fish, cor(median_gdd_5, gdd_wtr_5c_year0))
+
+# Practically uncorrelated
+with(year_3_fish, cor(median_gdd_5, gdd_wtr_5c_anomaly_year3))
+with(year_3_fish, cor(median_gdd_5, gdd_wtr_5c_anomaly_year2))
+with(year_3_fish, cor(median_gdd_5, gdd_wtr_5c_anomaly_year1))
+with(year_3_fish, cor(median_gdd_5, gdd_wtr_5c_anomaly_year0))
+
+with(year_3_fish, cor(median_gdd_5.x, acres))
+
+with(year_3_fish, cor(median_gdd_5.x, (3*median_gdd_5.x) - (gdd_wtr_5c_year0 + gdd_wtr_5c_year1 + gdd_wtr_5c_year2)))
+
+summary((3*year_3_fish$median_gdd_5.x) - (year_3_fish$gdd_wtr_5c_year0 + year_3_fish$gdd_wtr_5c_year1 + year_3_fish$gdd_wtr_5c_year2))
+```

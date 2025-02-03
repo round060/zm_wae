@@ -1,0 +1,293 @@
+---
+title: "yoy_wae_collation"
+author: "Chris Rounds"
+date: "10/29/2024"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(mnsentinellakes)
+library(arrow)
+library(sf)
+library(mgcv)
+library(RANN)
+
+mn_lakes <- readRDS("./data/mndow_lakes_sf_allDataUntransformed.rds")
+
+mw_data <- open_dataset("./data/hive", partitioning = c("state"))
+#glimpse(mw_data)
+```
+
+
+# Collect Fall electrofishing for walleye surveys
+```{r}
+surveys <- mw_data %>% filter(state == "Minnesota") %>% 
+  filter(sampling_method == "Fall electrofishing for walleye") %>%
+  mutate(lubridate_date_clean = lubridate::as_date(date_sample),
+         year = year(lubridate_date_clean), month = lubridate::month(lubridate_date_clean)) %>%
+  dplyr::filter(total_effort_1 > 0.5) %>%
+  collect()
+
+non_zero <- surveys %>%
+  dplyr::filter(species_1 == "walleye") %>%
+  dplyr::filter(age_class == "young_of_year") %>%
+  group_by(lake_id, lake_name, nhdhr_id, total_effort_ident, water_temp,
+           date_survey, date_total_effort_ident, date_sub_effort_ident, date_sample, 
+          year, total_effort_1) %>%
+  summarize(catch = n()) %>% mutate(CPUE = catch/total_effort_1)
+
+zero_surveys = surveys %>%
+  dplyr::filter(!total_effort_ident %in% non_zero$total_effort_ident) %>%
+  group_by(lake_id, lake_name, nhdhr_id, total_effort_ident, water_temp,
+           date_survey, date_total_effort_ident, date_sub_effort_ident, date_sample, 
+           year, total_effort_1) %>%
+  summarize(catch = 0) %>% mutate(CPUE = 0) 
+
+new_surveys_temp <- rbind(non_zero, zero_surveys) %>% 
+  ungroup() %>%
+  mutate(julian_day_survey = yday(date_survey),
+         julian_day_sample = yday(date_total_effort_ident),
+         julian_day_survey = ifelse(julian_day_sample > julian_day_survey, 
+                                    julian_day_sample, julian_day_survey)) %>%
+  mutate(lake_id = fixlakeid(lake_id),
+         method_abbrev = "EW")
+
+notes <- surveys %>% 
+  filter(total_effort_ident %in% new_surveys_temp$total_effort_ident) %>% 
+  select(total_effort_ident, gear_data_notes) %>% group_by(total_effort_ident) %>%
+  slice(1) %>% ungroup()
+
+new_surveys_ew <- merge(new_surveys_temp, notes, by = "total_effort_ident")
+```
+
+# Collect Standard electrofishing surveys
+```{r}
+surveys <- mw_data %>% filter(state == "Minnesota") %>% 
+  filter(sampling_method == "Standard electrofishing" | 
+           sampling_method == "Special sampling, electrofishing") %>%
+  filter(target_species == "walleye") %>%
+  mutate(lubridate_date_clean = lubridate::as_date(date_sample),
+         year = year(lubridate_date_clean), month = lubridate::month(lubridate_date_clean)) %>%
+  dplyr::filter(total_effort_1 > 0.5) %>%
+  collect()
+
+non_zero <- surveys %>%
+  dplyr::filter(species_1 == "walleye") %>%
+  dplyr::filter(age_class == "young_of_year") %>%
+  group_by(lake_id, lake_name, nhdhr_id, total_effort_ident, water_temp,
+           date_survey, date_total_effort_ident, date_sub_effort_ident, date_sample, 
+           year, total_effort_1) %>%
+  summarize(catch = n()) %>% mutate(CPUE = catch/total_effort_1)
+
+zero_surveys = surveys %>%
+  dplyr::filter(!total_effort_ident %in% non_zero$total_effort_ident) %>%
+  group_by(lake_id, lake_name, nhdhr_id, total_effort_ident, water_temp,
+           date_survey, date_total_effort_ident, date_sub_effort_ident, date_sample, 
+           year, total_effort_1) %>%
+  summarize(catch = 0) %>% mutate(CPUE = 0) 
+
+new_surveys_temp <- rbind(non_zero, zero_surveys) %>% 
+  ungroup() %>%
+  mutate(julian_day_survey = yday(date_survey),
+         julian_day_sample = yday(date_total_effort_ident),
+         julian_day_survey = ifelse(julian_day_sample > julian_day_survey, 
+                                    julian_day_sample, julian_day_survey)) %>%
+  mutate(lake_id = fixlakeid(lake_id),
+         method_abbrev = "EF")
+
+notes <- surveys %>% 
+  filter(total_effort_ident %in% new_surveys_temp$total_effort_ident) %>% 
+  select(total_effort_ident, gear_data_notes) %>% group_by(total_effort_ident) %>%
+  slice(1) %>% ungroup()
+
+new_surveys_sef_ef <- merge(new_surveys_temp, notes, by = "total_effort_ident")
+```
+
+# Combine all three
+```{r}
+new_surveys <- rbind(new_surveys_ew, new_surveys_sef_ef) %>%
+  # Survey has to be later than Aug - 1st
+  filter(julian_day_survey > 213) %>%
+  # Survey has to be done at night
+  filter(!str_detect(gear_data_notes, "DAYLIGHT_SAMPLING:Y")) %>%
+  mutate(year = year(date_survey))
+
+# A couple surveys sampled twice a year
+new_surveys %>% group_by(lake_id, year) %>% count() %>% filter(n >1)
+
+# remove bad duplicate surveys within a lake-year, keep the ones that are on lakefinder
+bad_efforts = c("335", "6887", "6881", "6877", "6874", "11867", "18106", "18341", 
+                "20442", "20444", "20445", "20446", "20447", "21402", "21404" , 
+                "21407", "21416", "21465", "21449" ,"22077", "23736", "31943", 
+                "32013", "32009", "35885", "40686", "43225")
+
+new_surveys <- new_surveys %>% filter(!total_effort_ident %in% bad_efforts) %>% 
+  filter(year > 1990)
+
+new_ef_dows <- unique(new_surveys$lake_id)
+# 1343 lakes
+```
+
+# Remove objects that clutter
+```{r}
+rm(new_surveys_ew); rm(surveys); rm(new_surveys_sef_ef); rm(notes); 
+rm(new_surveys_temp);
+rm(non_zero); rm(zero_surveys)
+```
+
+
+# Get lake attributes for the new surveys
+```{r}
+sf_use_s2(FALSE)
+st_crs(mn_lakes) <- 26915
+
+mn_lakes_ef <- mn_lakes %>% dplyr::filter(dowlknum %in% new_ef_dows)
+
+mn_lakes_ef <- st_as_sf(x = mn_lakes_ef,                         
+                  coords = c("x", "y"),
+                  crs = "+proj=utm +zone=15")
+mn_lakes_ef = st_transform(mn_lakes_ef, crs = "+proj=longlat +datum=WGS84")
+mn_lakes_ef$x <- st_coordinates(st_centroid(st_as_sf(mn_lakes_ef)))[,"X"]
+mn_lakes_ef$y <- st_coordinates(st_centroid(st_as_sf(mn_lakes_ef)))[,"Y"]
+
+mn_lakes <- as.data.frame(mn_lakes_ef) %>%
+  select("dowlknum", "pw_basin_n","acres", "shore_mi", "x", "y", "wb_class") %>%
+  rename(lake_id = dowlknum) %>% distinct(lake_id, .keep_all = T)
+
+new_surveys_spatial <- merge(x = new_surveys, y = mn_lakes, by = "lake_id", all.x = T) 
+```
+
+# Get invasion status for all lakes
+```{r}
+ais <- readxl::read_excel("./data/infested-waters.xlsx") %>% 
+  dplyr::filter(ais == "zebra mussel") %>% select(!Column1) %>%
+  dplyr::filter(dow != "NA", dow != "na") %>%
+  dplyr::filter(!grepl("none", dow) ) %>%
+  mutate(lake_id = fixlakeid(dow),
+         lake_id = str_pad(lake_id, width = 8, side = "right", pad = "0")) %>%
+  dplyr::rename(year.listed = year) %>%
+  select(lake_id, year.listed, year_confirmed, ais) %>% 
+  filter(year.listed <= 2021)
+
+new_surveys_ais <- merge(x = new_surveys_spatial, y = ais, 
+                         by = "lake_id", all.x = T) %>%
+  mutate(ais = ifelse(is.na(ais), 0, 1),
+         year_confirmed = as.numeric(year.listed),
+         year_confirmed = ifelse(is.na(year_confirmed), NA, year_confirmed),
+         infested = ifelse(year_confirmed <= year, 1, 0)) %>%
+  dplyr::select(!c(ais))
+```
+
+# Get new stocking 
+```{r}
+stocking <- read.csv("./data/mn_wae_stocking.csv") %>% 
+  rename(lake_id = DOW, year = Year) %>%
+  mutate(lake_id = ifelse(lake_id == "04003500", "04003501", lake_id)) %>%
+  select(lake_id, year, FRY, FGL, fry.pa, fgl.pa)
+
+new_surveys_stocking <- merge(x = new_surveys_ais, y = stocking, 
+                         by = c("lake_id", "year"), all.x = T) %>%
+  mutate(across(FRY:fgl.pa, ~ ifelse(is.na(.), 0, .))) 
+
+```
+
+# Get Secchi - EVAL = FALSE because not using secchi
+```{r, eval = F}
+secchi <- read.csv("./data/MN_AnnualSecchi_update.csv") %>%
+  select(year, median_secchi, Prmnn_I) %>%
+  mutate(nhdhr.id = paste0("nhdhr_", Prmnn_I))
+
+secchi_average <- secchi %>% group_by(nhdhr.id) %>% 
+  summarize(median_secchi_lake = median(median_secchi))
+
+nhd.id <- mwlaxeref::lake_id_xref %>% filter(state == "mn") %>%
+  mutate(local.id = fixlakeid(local.id)) %>%
+  group_by(local.id, nhdhr.id) %>% distinct(.keep_all = T) %>% ungroup()
+
+secchi.full = merge(x = secchi, y = nhd.id, 
+               by = c("nhdhr.id"), all.x = T) %>%
+  select(local.id, nhdhr.id, lagos.id, year, median_secchi) %>%
+  rename(lake_id = local.id) %>%
+  group_by(lake_id, nhdhr.id, year) %>% 
+  distinct(.keep_all = T) %>% ungroup()
+
+# add remotely sensed secchi to the data
+new_surveys_secchi <- merge(x = new_surveys_stocking, y = secchi.full, 
+                   by = c("lake_id", "year"), all.x = T) 
+
+new_surveys_secchi <- new_surveys_secchi %>% group_by(year, lake_id) %>%
+  mutate(median_secchi = mean(median_secchi)) %>% 
+  distinct(total_effort_ident, .keep_all = T)
+```
+
+# Remove old objects
+```{r}
+rm(new_surveys); rm(new_surveys_ais); rm(new_surveys_spatial); rm(new_surveys_stocking)
+rm(ais); rm(stocking); rm(mn_lakes);rm(efish_wae);
+rm(secchi.full); rm(secchi); rm(nhd.id)
+```
+
+
+# Get Temp data
+```{r}
+current_temps <- read_feather("./data/lake_temperature_metrics_GLM_NLDAS.feather") %>% 
+  dplyr::select(site_id, year, gdd_wtr_0c, gdd_wtr_5c, gdd_wtr_10c)
+
+average_temps <- current_temps %>% 
+  group_by(site_id) %>% 
+  summarize(median_gdd_5 = median(gdd_wtr_5c))
+
+all_temps <- merge(current_temps, average_temps, by = c("site_id")) %>%
+  mutate(anomaly_gdd_5 = gdd_wtr_5c - median_gdd_5)
+
+dow_year <- new_surveys_stocking %>% distinct(lake_id, year)
+
+dow_nhdhr <- readRDS("./data/mndow_nhdhr_xwalk.rds") %>% rename(lake_id = MNDOW_ID) %>%
+  mutate(lake_id = gsub("^.{0,6}", "", lake_id))
+
+missing_ids <- data.frame(
+  lake_id = c("69069400", "69060800", "38053200", "38021100", "16063300"), 
+  site_id = c("nhdhr_120019354", "nhdhr_80993113", 
+               "nhdhr_72d19d48-754d-459b-a1f2-b1cfd8993b06", "nhdhr_80993749", 
+               "nhdhr_120019082"))
+
+dow_nhdhr = dow_nhdhr %>% rows_update(y = missing_ids, by = c("lake_id"))
+
+surveys_no_temp <- merge(new_surveys_stocking, dow_nhdhr, by = c("lake_id"), all.x = T)
+
+filtered_temp <- all_temps %>% 
+  dplyr::filter(site_id %in% surveys_no_temp$site_id) 
+
+surveys_ef <- merge(x = surveys_no_temp , y = filtered_temp, 
+                    by = c("site_id", "year"), all.x = T)
+```
+
+# remove temperature stuff
+```{r}
+rm(current_temps); rm(filtered_temp); rm(surveys_no_temp); rm(dow_nhdhr); rm(dow_year); 
+rm(mn_lakes_ef)
+```
+
+# Final Fixes before CSVing
+```{r}
+model_surveys <- surveys_ef %>% 
+  select(!c(date_total_effort_ident, 
+            date_sub_effort_ident, date_sample)) %>%
+  mutate(year.listed = ifelse(is.na(year.listed), 0, year.listed),
+         year_confirmed = ifelse(is.na(year_confirmed), 0, year_confirmed),
+         infested = ifelse(is.na(infested), 0, infested),
+         log_acres = log(acres),
+         log_shore = log(shore_mi),
+         cpue = catch/total_effort_1) %>%
+  drop_na(gdd_wtr_0c)
+
+yoy_ef <- model_surveys %>%
+  select(!c(site_id, acres, shore_mi, infested))
+
+#
+write.csv(yoy_ef, "./cleaned_data/yoy_catch_data.csv", row.names = F)
+```
+
+
+
