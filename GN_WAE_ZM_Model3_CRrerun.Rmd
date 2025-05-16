@@ -1,15 +1,13 @@
 ---
-title: "EF_WAE_ZM_Model1"
+title: "gn_WAE_ZM_Model1"
 author: "Holly Kundel"
 date: "11/15/2021"
 output: html_document
 ---
 
-This model is run using `ZM_LAKE` as zebra mussel invasion variable - Only considered invaded if at least one EF survey was done the year of invasion or later - No invasions after 2019 count (because no data post 2019) - "0" indicates a lake is uninvaded (based on above criteria) - "1" indicates a lake is invaded (based on above criteria)
-
 Load in Required Packages
 
-```{r}
+```{r, warings = F, messages = F}
 #remove.packages(c("StanHeaders", "rstan"))
 #install.packages("rstan", repos = c('https://stan-dev.r-universe.dev', getOption("repos")))
 #if (file.exists(".RData")) file.remove(".RData")
@@ -29,6 +27,15 @@ library(RANN)
 library(ggplot2)
 library(MASS)
 library(bayesplot)
+library(brms)
+library(rstan)
+library(bayesplot)
+library(lme4)
+library(gridExtra)
+library(ggthemes)
+library(coda)
+library(forcats)
+options(scipen = 999)
 ```
 
 Load in Data
@@ -59,7 +66,7 @@ dat.geo <- st_as_sf(dat, coords = c("x", "y"), crs = 4326)
 Separate Invaded Lakes and Uninvaded Lakes
 
 -   Using column `ZM_LAKE` for this
--   Only considered invaded if at least one EF survey was done the year of invasion or later
+-   Only considered invaded if at least one gn survey was done the year of invasion or later
 -   
 -   "0" indicates a lake is uninvaded (based on above criteria)
 -   "1" indicates a lake is invaded (based on above criteria)
@@ -143,23 +150,6 @@ head(final.dat3)
 
 
 # Prepare to run model
-
-Load more libraries
-
-```{r}
-# if you need to install stan run: "install.packages("rstan", repos = "https://cloud.r-project.org/", dependencies = TRUE)"
-#library(StanHeaders)
-library(rstan)
-library(bayesplot)
-library(lme4)
-library(ggmcmc) # Use ggmcmc package for assessing convergence
-library(gridExtra)
-library(ggthemes)
-library(coda)
-library(forcats)
-```
-
-
 ```{r}
 dat <- final.dat3 %>%
   mutate(ZM_LAKE = ifelse(year_confirmed == 0, 0, 1),
@@ -235,33 +225,25 @@ gdd <- summaryBy(median_gdd_5 ~ lake.id, data=dat, FUN=mean)
 # Transform as needed and scale
 lake_area2 <- as.numeric(scale(log(lake_area$log_acres.mean)))
 gdd2 <- as.numeric(scale(gdd$median_gdd_5.mean))
-#secchi2 <- as.numeric(scale(secchi$median_secchi.mean))
 ```
 
 Observation-level predictors
 
 ```{r}
 # Observation-level predictors, transform as needed and scale
-#anomaly_gdd_year0 <- as.numeric(scale(dat$gdd_wtr_5c_anomaly_year0))
-#anomaly_gdd_year1 <- as.numeric(scale(dat$gdd_wtr_5c_anomaly_year1))
-#anomaly_gdd_year2 <- as.numeric(scale(dat$gdd_wtr_5c_anomaly_year2))
-#anomaly_gdd_year3 <- as.numeric(scale(dat$gdd_wtr_5c_anomaly_year3))
 sum <- (dat$gdd_wtr_5c_year0 + dat$gdd_wtr_5c_year1 + dat$gdd_wtr_5c_year2) - (3*dat$median_gdd_5)
-
 gdd_sum <- as.numeric(scale(sum))
-
 fry.pa <- as.numeric(scale(dat$fry.pa))
 fgl.pa <- as.numeric(scale(dat$fgl.pa))
 
+hist(fry.pa); hist(fgl.pa)
 
 post <- dat$post
 x.treatment <- dat$treatment
-
 ```
 
 Quick test with glmer
-
-```{r}
+```{r, eval = F}
 m0 <-glmer(age3_count~ 1 + (1 | lake.id), data = dat, family = poisson(link = "log"), nAGQ = 100)
 #summary(m0)
 # # 
@@ -278,12 +260,6 @@ dat$gdd_sum_S <- gdd_sum
 dat$fry.pa_S <- fry.pa
 dat$fgl.pa_S <- fgl.pa
 
-temp_gdd2 = as.data.frame(gdd2) %>% rowid_to_column() %>% rename(gdd_S = gdd2)
-temp_area = as.data.frame(lake_area2) %>% rowid_to_column() %>% rename(area_S = lake_area2)
-
-dat <- merge(x = dat, y = temp_gdd2, by.x = c("lake.id"), by.y = c("rowid")) %>% 
-  merge(y = temp_area, by.x = c("lake.id"), by.y = c("rowid"))
-
 #write.csv(dat, "./cleaned_data/gn_model_data.csv", row.names = F)
 ```
 
@@ -294,8 +270,6 @@ n_post <- max(post)
 n_trt <- max(x.treatment)
 n_lake <- max(dat$lake.id)
 n_year <- max(dat$year.id)
-
-
 ```
 
 Load data; x = x; (dim(x)[2] + dim(x_obs)[2] + 1)
@@ -306,26 +280,171 @@ data <- list(y = dat$age3_count, lake = dat$lake.id, N = dim(dat)[1],
              year = dat$year.id, n_year = n_year, n_post = n_post, n_trt = n_trt,
              post = post, trt = x.treatment, 
              fry_pa = fry.pa, fgl_pa = fgl.pa,
-             survey_gdd_sum = gdd_sum, 
-             gdd = gdd2, lake_area = lake_area2 # variables with 2 at the end are "lake level" predictors
+             survey_gdd_sum = gdd_sum, gdd = gdd2, 
+             lake_area = lake_area2 
              ) 
 ```
 
 
-
-```{r}
+# STAN Model
+```{r, eval = F}
 options(scipen = 999)
 out <- stan(file='./pois_model_zip3_GN.stan', data = data,
-            iter = 50000, warmup = 20000, chains=4, thin=1, cores=4, refresh = 1)
+            iter = 50000, warmup = 20000, chains=4, thin=2, cores=4, refresh = 1)
 print(out)
 
 
 # Save all the stan output
 #
 saveRDS(out, file="./models/model_out_zip_GN_nosecchi_3gddanomalyCR.rds")
-#out <- readRDS(file="./models/model_out_zip_GN_nosecchi_3gddanomalyCR.rds")
+out <- readRDS(file="./models/model_out_zip_GN_nosecchi_3gddanomalyCR.rds")
 summary(out)
 
 mcmc_trace(out, pars = c("sigma_year", "sigma_lake", "theta", 
                          "b_0", "b_post", "b_trt",  "b_post_trt", "b_fry", "b_fry", "b_fgl", "b_lake_area"))
 ```
+
+
+
+```{r}
+to_keep <- c("anomaly_gdd_5_s","anomaly_gdd_5", "fry", "fingerling", "median_gdd_5_s", "median_gdd_5", "lake_area_s", "log_acres")
+
+dat_standardized <- dat %>% 
+  mutate(anomaly_gdd_5 = as.numeric((gdd_wtr_5c_year0 + gdd_wtr_5c_year1 + gdd_wtr_5c_year2) - 3*median_gdd_5),
+         anomaly_gdd_5_s = as.numeric(scale((gdd_wtr_5c_year0 + gdd_wtr_5c_year1 + gdd_wtr_5c_year2) - 3*median_gdd_5)),
+         lake_area_s = as.numeric(scale(log_acres)),
+         median_gdd_5_s = as.numeric(scale(median_gdd_5)),
+         fry = as.factor(ifelse(fry.pa == 0, 0, 1)),
+         fingerling = as.factor(ifelse(fgl.pa == 0, 0, 1)),
+         year = as.factor(year)) %>%
+  dplyr::select(lake.id, year, age3_count, offsets, total.effort.1, post, treatment, x, y, matches(to_keep))
+
+write.csv(dat_standardized, "./cleaned_data/gn_for_model.csv", row.names = F)
+
+priors = c(
+    prior(normal(0, 5), class = "Intercept"),
+    prior(normal(0, 5), class = "b")
+  )
+
+### Zero inflated poisson with covariates
+zip_gn_model <- 
+  brm(age3_count ~ offset(offsets) + 
+      post + treatment + post:treatment + fry + fingerling + 
+      anomaly_gdd_5_s + median_gdd_5_s + 
+      lake_area_s + median_gdd_5_s +
+      (1 | year) +              
+      (1 | lake.id),
+    family = zero_inflated_poisson(), data = dat_standardized, prior = priors,
+    control = list(max_treedepth = 25),
+    chains = 4, iter = 10000, warmup = 2500, thin = 2, seed = 1024, save_pars=save_pars(all=TRUE))
+#summary(zip_gn_model)
+#plot(zip_gn_model)
+saveRDS(zip_gn_model, "./models/zip_gn_model_brms.rds")
+zip_gn_model <- readRDS("./models/zip_gn_model_brms.rds")
+
+
+### Negative Binomial with covariates
+nb_gn_model <- 
+  brm(age3_count ~ offset(offsets) + 
+      post + treatment + post:treatment + fry + fingerling + 
+        anomaly_gdd_5_s + median_gdd_5_s + 
+      lake_area_s + median_gdd_5_s +
+      (1 | year) +              
+      (1 | lake.id), 
+    family = negbinomial(), data = dat_standardized, prior = priors,
+    chains = 4, iter = 10000, warmup = 2500, thin = 2, seed = 1024, save_pars=save_pars(all=TRUE))
+#plot(nb_gn_model)
+#summary(zip_gn_model)
+saveRDS(nb_gn_model, "./models/nb_gn_model_brms.rds")
+#nb_gn_model <- readRDS("./models/nb_gn_model_brms.rds")
+
+
+
+### Zero inflated poisson NO covariates
+zip_gn_model_nocovs <- 
+  brm(age3_count ~ offset(offsets) + 
+      post + treatment + post:treatment +
+      (1 | year) +              
+      (1 | lake.id), 
+    family = zero_inflated_poisson(), data = dat_standardized, prior = priors,
+    control = list(max_treedepth = 25),
+    chains = 4, iter = 10000, warmup = 2500, thin = 2, seed = 1024, save_pars=save_pars(all=TRUE))
+saveRDS(zip_gn_model_nocovs, "./models/zip_gn_model_nocovs_brms.rds")
+rm(zip_gn_model_nocovs)
+
+### Negative Binomial NO covariates
+nb_gn_model_nocovs <- 
+  brm(age3_count ~ offset(offsets) + 
+      post + treatment + post:treatment +
+      (1 | year) +              
+      (1 | lake.id), 
+    family = negbinomial(), data = dat_standardized, prior = priors,
+    chains = 4, iter = 10000, warmup = 2500, thin = 2, seed = 1024, save_pars=save_pars(all=TRUE))
+saveRDS(nb_gn_model_nocovs, "./models/nb_gn_model_nocovs_brms.rds")
+#nb_gn_model_nocovs <- readRDS("./models/nb_gn_model_nocovs_brms.rds")
+#summary(nb_gn_model_nocovs)
+rm(nb_gn_model_nocovs)
+
+### Zero inflated Negative Binomial with covariates
+zipnb_gn_model <- 
+  brm(age3_count ~ offset(offsets) + 
+      post + treatment + post:treatment + fry + fingerling + 
+      anomaly_gdd_5_s + median_gdd_5_s + 
+      lake_area_s + median_gdd_5_s +
+      (1 | year) +              
+      (1 | lake.id), 
+    family = zero_inflated_negbinomial(), data = dat_standardized, prior = priors,
+    chains = 4, iter = 10000, warmup = 2500, thin = 2, seed = 1024, save_pars=save_pars(all=TRUE))
+#plot(zipnb_gn_model)
+#summary(zipnb_gn_model)
+saveRDS(zipnb_gn_model, "./models/zipnb_gn_model_brms.rds")
+#zipnb_gn_model <- readRDS("./models/zipnb_gn_model_brms.rds")
+```
+
+
+# Model selection, and other fun tidbits
+```{r}
+# These take quite a bit to run and dont work (high pareto K value)
+output_nb <- loo(nb_gn_model, moment_match = TRUE)
+output_zipnb <- loo(zipnb_gn_model, moment_match = TRUE)
+output_zip <- loo(zip_gn_model, moment_match = TRUE)
+
+loo_compare(output_nb, output_zipnb, output_nb_nocovs)
+
+options(future.globals.maxSize= 891289600)
+start <- Sys.time()
+kfoldzip <- kfold(zip_gn_model, k = 10) # elpd_kfold = -7022.6	SE = 411.7	 	
+#kfoldnb <- kfold(nb_gn_model, k = 10) # elpd_kfold = -3315.9		SE = 58.6	
+#kfoldzionb <- kfold(zipnb_gn_model, k = 10) # elpd_kfold = -3311.7		SE = 	58.4
+#print(kfoldzip); print(kfoldnb); print(kfoldzionb)
+kfold_results <- list(zip = kfoldzip, nb = kfoldnb, zinb = kfoldzionb)
+#saveRDS(kfold_results, "./models/kfold_results_gn.rds")
+end <- Sys.time()
+total <- end - start
+
+kfold_results$zip
+kfold_results$nb
+kfold_results$zinb
+
+summary(zip_gn_model)         
+#post:treatment = -0.24
+summary(nb_gn_model)          
+#post:treatment = -0.18
+summary(zip_gn_model_nocovs)
+#post:treatment =
+summary(nb_gn_model_nocovs)
+#post:treatment = -0.56
+summary(zipnb_gn_model)
+#post:treatment = -0.18
+
+bayes_R2(nb_gn_model)
+pp_check(nb_gn_model, ndraws = 100)
+pp_check(nb_gn_model, type='stat', stat='mean')
+pp_check(nb_gn_model, type='error_scatter_avg')
+
+bayes_R2(zipnb_gn_model)
+pp_check(zipnb_gn_model, ndraws = 100)
+pp_check(zipnb_gn_model, type='stat', stat='mean')
+pp_check(zipnb_gn_model, type='error_scatter_avg')
+```
+

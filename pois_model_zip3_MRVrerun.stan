@@ -4,11 +4,10 @@ data {
   int<lower=0> n_lake;
   int<lower=0> n_post;
   int<lower=0> n_trt;
-  int<lower=0> n_stocked;
   // observation-level predictors
   array[N] int<lower=0, upper=1> post;
   array[N] int<lower=0, upper=1> trt;
-  array[N] int<lower=0, upper=1> stocked;
+  vector[N] stocked;
   vector[N] survey_gdd;
   vector[N] offsets;
   // lake and year indicator

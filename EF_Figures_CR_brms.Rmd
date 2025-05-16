@@ -36,13 +36,10 @@ library(shinystan)
 ```
 
 # Data
-
-
 ```{r, message=FALSE}
-EF_Final <- read_csv("./cleaned_data/yoy_catch_data.csv") %>%
-  mutate(ZM_LAKE = ifelse(year_confirmed == 0, "Uninvaded", "ZM Invaded"))
+EF_Final <- read_csv("./cleaned_data/ef_for_model.csv")
 
-out <- readRDS(file='./models/model_out_zip_CRrerun_nosecchi.rds')
+out <- readRDS(file='./models/zinb_ef_model_brms.rds')
 
 # launch_shinystan(out)
 
@@ -50,7 +47,6 @@ out <- readRDS(file='./models/model_out_zip_CRrerun_nosecchi.rds')
 # Convert mcmc draws to matrix
 posterior <- as.matrix(out)
 glimpse(posterior)
-
 
 
 posterior_df <- as.data.table(posterior)[ ,c(1:13),] #take only the first 13 columns
@@ -73,8 +69,8 @@ MN_Counties <- map_data("county")%>%
 EF_Lakes_ZM <- ggplot(data = MN_Counties, mapping = aes(x = long, y = lat, group=group))+
   coord_fixed(1.3) +
   geom_polygon(color= "gray85", fill = "gray90")+
-  geom_point(data=EF_Final, aes(x= x, y = y, group=25, color=as.factor(ZM_LAKE),
-                                      shape = as.factor(ZM_LAKE)),alpha = 0.3, size =3) +
+  geom_point(data=EF_Final, aes(x= x, y = y, group=25, color=as.factor(treatment),
+                                      shape = as.factor(treatment)),alpha = 0.3, size =3) +
   scale_color_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM Invaded"), values = c("#0571b0", "#ca0020"))+
   scale_shape_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM Invaded"), values = c(16, 15))+
   labs(color = "ZM Invasion Status",x= "Longitude", y ="Latitude")+
@@ -148,7 +144,7 @@ Final_Inset_Map <- ggdraw()+
   draw_plot(N_AM_map, x = 0.7, y = 0.3, width = .2, height = .15)
 
 Final_Inset_Map
-#ggsave("./figures/figure_1.jpeg", height = 10, width = 9)
+ggsave("./figures/figure_1.jpeg", height = 10, width = 9)
 ```
 
 # Figure 2
@@ -158,7 +154,8 @@ BACI Figure
 Data
 ```{r}
 
-NoZM_Pre <- exp(posterior[,"b_0"]) 
+NoZM_Pre <- as.numeric(exp(posterior_df$b_Intercept))
+
 
 #sd = sqrt(posterior[, "sigma_lake"]^2 + posterior[, "sigma_year"]^2)
 #NoZM_Pre <- exp(posterior[,"b_0"] + rnorm(length(posterior[, "sigma_lake"]), 0, sd))
@@ -168,19 +165,19 @@ mean(NoZM_Pre)
 quantile(NoZM_Pre, c(0.025, 0.975))
 
 # Control Post
-NoZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_post"]) 
+NoZM_Post <- as.numeric(exp(posterior_df$b_Intercept + posterior_df$b_post))
 #NoZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_post"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
 mean(NoZM_Post)
 quantile(NoZM_Post, c(0.025, 0.975))
 
 # ZM Treatment Pre
-ZM_Pre <- exp(posterior[,"b_0"] + posterior[,"b_trt"]) 
+ZM_Pre <- as.numeric(exp(posterior_df$b_Intercept + posterior_df$b_treatment))
 #ZM_Pre <- exp(posterior[,"b_0"] + posterior[,"b_trt"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
 mean(ZM_Pre)
 quantile(ZM_Pre, c(0.025, 0.975))
 
 # ZM Treatment Post
-ZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_post"] +  posterior[,"b_trt"] +  posterior[,"b_post_trt"]) 
+ZM_Post <- as.numeric(exp(posterior_df$b_Intercept + posterior_df$b_treatment + posterior_df$b_post + posterior_df$`b_post:treatment`))
 #ZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_trt"] +posterior[,"b_post_trt"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
 mean(ZM_Post)
 quantile(ZM_Post, c(0.025, 0.975))
@@ -217,8 +214,7 @@ BACI_Figure <-ggplot(BACI_PLOT_DAT , aes(x = Levels, y = Mean, ymin = Quant_2.5,
         axis.title.x = element_blank())#,
         
 BACI_Figure
-#
-ggsave("./figures/figure_2.jpeg", height = 10, width = 10)
+ggsave("./zinb_figures/figure_2.jpeg", height = 10, width = 10)
 ```
 
 
@@ -229,14 +225,15 @@ Posterior Distributions
 color_scheme_set(scheme = "blue")
 post_dist_blue2 <- mcmc_areas(
     posterior,
-    pars = c("b_trt", "b_post","b_stocked","b_post_trt","b_lake_area","b_gdd","b_survey_gdd"),
+    pars = c("b_treatment", "b_post","b_STOCKED","b_post:treatment","b_lake_area_s","b_median_gdd_5_s","b_anomaly_gdd_5_s"),
     prob = 0.95, # 95% intervals
     prob_outer = 0.99, # 99%
     point_est = "median",
     area_method = "scaled height"
   ) + 
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") + 
-  scale_y_discrete(limit = c("b_trt", "b_post", "b_post_trt", "b_lake_area", "b_stocked","b_survey_gdd", "b_gdd"),
+  scale_y_discrete(limit = c("b_treatment", "b_post","b_post:treatment","b_lake_area_s", "b_STOCKED",
+                             "b_median_gdd_5_s","b_anomaly_gdd_5_s"),
                        labels = c("Zebra Mussels", "Post Invasion", "ZM * Post", "Lake Area",
                                   "Stocked", "GDD (age 0)", "Lake median GDD"))+
   theme(axis.text.x = element_text(color = "black"),
@@ -245,21 +242,19 @@ post_dist_blue2 <- mcmc_areas(
 
 post_dist_blue2
 
-#
-ggsave("./figures/figure_3.jpeg", height = 10, width = 10)
+ggsave("./zinb_figures/figure_3.jpeg", height = 10, width = 10)
 ```
 
 
 # Figure 4
 
 Stocking Figure
-
 ```{r, warning = FALSE}
 # get stocking estimates
 
-not_stocked <- exp(posterior[,"b_0"]) 
+not_stocked <- exp(posterior_df$b_Intercept) 
 
-stocked <- exp(posterior[,"b_0"] + posterior[,"b_stocked"]) 
+stocked <- exp(posterior_df$b_Intercept + posterior_df$b_STOCKED)
 
 
 stocking_estimates <- tibble(
@@ -290,7 +285,7 @@ Stocking_Figure <-ggplot(stocking_estimates_DAT , aes(x = Stocking_Status, y = M
         axis.title.x = element_blank())#,
         
 Stocking_Figure
-ggsave("./figures/figure_4.jpeg", height = 10, width = 10)
+ggsave("./zinb_figures/figure_4.jpeg", height = 10, width = 10)
 ```
 
 
@@ -298,66 +293,13 @@ ggsave("./figures/figure_4.jpeg", height = 10, width = 10)
 
 Environmental effects
 
-Model Data
-```{r}
-dat <- read.csv('./cleaned_data/NN_EF_WAE_ZM_Model_CRrerun.csv') %>%
-  mutate(ZM_LAKE = ifelse(year_confirmed == 0, 0, 1))  %>% 
-  mutate(time = ifelse(year_confirmed == 0, year_confirmed.y, year_confirmed),
-         post = ifelse(year > time, 1, 0),
-         treatment = ZM_LAKE # USING ZM_LAKE_HERE
-         )%>%
-  mutate(INVASION_STATUS_NEW = case_when(ZM_LAKE == 0 ~ "Uninvaded",
-                                         ZM_LAKE == 1 & post == 0 ~ "PRE_ZM",
-                                         ZM_LAKE == 1 & post == 1 ~ "POST_ZM"))
-dim(dat)
-head(dat)
-
-
-# Create lake ID
-dat$lake.id <- as.numeric(as.factor(as.numeric(as.factor(dat$lake_id))))
-# Create year ID
-dat$year.id <- as.numeric(as.factor(as.numeric(as.factor(dat$year))))
-nyear <- length(unique(dat$year.id))
-
-# Sort data by site
-dat <- dat %>% 
-  arrange(lake.id)
-
-```
-
-Lake-level predictors
-```{r}
-# Prepare lake-level predictors
-lake_area <- summaryBy(log_acres ~ lake.id, data=dat, FUN=mean)
-gdd <- summaryBy(median_gdd_5 ~ lake.id, data=dat, FUN=mean)
-
-# Transform as needed and scale
-lake_area2 <- as.numeric(scale(lake_area$log_acres.mean))
-gdd2 <- as.numeric(scale(gdd$median_gdd_5.mean))
-
-
-```
-
-Observation-level predictors
-```{r}
-# Observation-level predictors, transform as needed and scale
-annual_gdd <- as.numeric(scale(dat$gdd_wtr_5c)) # GDD up to day of sampling
-post <- dat$post
-x.treatment <- dat$treatment
-stocked <- dat$STOCKED
-```
-
-
-
-
-GDD annual 5C from year of survey (sum)
 ```{r}
 # Begin predict code for first three year GDD
 
-b_gdd_sum <- posterior_df$b_survey_gdd
-b_0 <- posterior_df$b_0
+b_gdd_sum <- posterior_df$b_anomaly_gdd_5_s
+b_0 <- posterior_df$b_Intercept
 
-sum <- dat$anomaly_gdd_5 
+sum <- EF_Final$anomaly_gdd_5 
 
 lower_gdd = min(sum)
 upper_gdd = max(sum)
@@ -397,14 +339,14 @@ Lake area
 # Begin predict code
 
 b_area <- posterior_df$b_lake_area
-b_0 <- posterior_df$b_0
+b_0 <- posterior_df$b_Intercept
 
 # Lake area range
-lower_area = min(dat$log_acres)
-upper_area = max(dat$log_acres)
+lower_area = min(EF_Final$log_acres)
+upper_area = max(EF_Final$log_acres)
 log_lake_area_range <- seq(lower_area, upper_area, by= 0.1) #935 numbers
 
-log_lake_area_range_standardized <- wiqid::standardize2match(log_lake_area_range, dat$log_acres)
+log_lake_area_range_standardized <- wiqid::standardize2match(log_lake_area_range, EF_Final$log_acres)
 
 area.plot <- data.frame(area = log_lake_area_range, 
                         area_s = log_lake_area_range_standardized, 
@@ -431,18 +373,17 @@ area_Plot
 Median GDD (1993 - 2019), lake level
 ```{r, eval = F}
 # Begin predict code
-b_gdd_LL <- posterior_df$b_gdd
-b_0 <- posterior_df$b_0
+b_gdd_LL <- posterior_df$b_median_gdd_5_s
+b_0 <- posterior_df$b_Intercept
 
 # Range of observed lake level GDD's (base 5)
-range(dat$median_gdd_5)
-lower_gdd = range(dat$median_gdd_5)[1]
-upper_gdd = range(dat$median_gdd_5)[2]
+lower_gdd = min(EF_Final$median_gdd_5)
+upper_gdd = max(EF_Final$median_gdd_5)
 
 
 gdd_LL_range <- seq(lower_gdd, upper_gdd, by= 5)
 # Standardized the range
-gdd_LL_range_standardized <- wiqid::standardize2match(gdd_LL_range, dat$median_gdd_5)
+gdd_LL_range_standardized <- wiqid::standardize2match(gdd_LL_range, EF_Final$median_gdd_5)
 
 # Output storage DF
 gdd.plot <- data.frame(gdd = gdd_LL_range, 
@@ -470,15 +411,12 @@ gdd_LL_Plot
 
 # Combine into one figure
 ```{r}
-Fig_5 <- plot_grid(gdd_LL_Plot, GDD_Plot,  area_Plot,
+Fig_5 <- plot_grid(gdd_LL_Plot, gdd_Plot_sum,  area_Plot,
           labels = c("A", "B", "C"),
           label_size = 14)
 Fig_5
-ggsave("./figures/figure_5.jpeg", height = 10, width = 10)
-
+ggsave("./zinb_figures/figure_5.jpeg", height = 10, width = 10)
 ```
-
-
 
 
 
@@ -507,27 +445,28 @@ quantile(uninvaded_prop, c(0.025, 0.975)) #-0.06585174 or 6.59% increase post
 Effect of Stocking, stocking led to higher catch rates
 ```{r}
 # Not stocked
-Not_stocked <- exp(posterior[,"b_0"]) 
-mean(Not_stocked) # 4.189089
-quantile(Not_stocked, c(0.025, 0.975)) # 2.919797 5.754348
+Not_stocked <- exp(posterior[,"b_Intercept"]) 
+mean(Not_stocked)
+quantile(Not_stocked, c(0.025, 0.975)) 
 
 #Stocked
-stocked <- exp(posterior[,"b_0"]+posterior[,"b_stocked"]) 
-mean(stocked) # 11.13831
-quantile(stocked, c(0.025, 0.975)) # 7.769137 15.284624 
+stocked <- exp(posterior[,"b_Intercept"]+posterior[,"b_STOCKED"]) 
+mean(stocked) 
+quantile(stocked, c(0.025, 0.975)) 
 
 
 #stocking effect
 stocking_diff= stocked - Not_stocked
 mean(stocking_diff) # 6.949217
-quantile(stocking_diff, c(0.025, 0.975)) #4.841930 9.549285 
+quantile(stocking_diff, c(0.025, 0.975)) 
 
 # percent change with stocking
 stocking_prop = stocking_diff/Not_stocked
-mean(stocking_prop) #1.65941 or 166% increase
-quantile(stocking_prop, c(0.025, 0.975)) # 1.57540 1.74643 
+mean(stocking_prop) 
+quantile(stocking_prop, c(0.025, 0.975)) 
 ```
 
+#### JUNKYARD - Not up to date!
 Basic Summary Info (Table 1)
 ```{r}
 final.dat3 <- read_csv("R and stan code/Data/NN_EF_WAE_ZM_Model_MRVrerun.csv")
@@ -621,163 +560,3 @@ GDD_LL <- posterior_df%>%
 nrow(GDD_LL)/75000 # 0.14944
 
 ```
-
-Number of ZM Infested lakes vs number of ZM Infested walleye lakes
-First do with the data to 2019 (used here) 
-THEN compare to the data that is most up to date
-```{r}
-# Read in infested waters list
-  # can be downloaded here: https://www.dnr.state.mn.us/invasives/ais/infested.html
-iw <- read_excel("R and stan code/Data/infested-waters_03_21_2023.xlsx", skip = 1)
-iw <- iw[, -dim(iw)[2]]
-
-# Change column names
-
-colnames(iw) <- c("waterbody_name", "county", "species", "year", "year_conf", "dowlknum")
-
-iw$connected <- factor(ifelse(grepl("connect", iw$year_conf) | grepl("Connect", iw$year_conf) | grepl("conect", iw$year_conf),
-                              "connected", "confirmed"))
-
-
-# Fixing some dowlknum entries
-# CC-LLLL-BB, where C=county, L=lake or parent dow, B=basin, is a nice convention to standardize to
-unique(iw$dowlknum[!grepl("-", iw$dowlknum)])
-
-iw$dowlknum[iw$dowlknum=="NA"] <- NA
-iw$dowlknum[iw$dowlknum=="na"] <- NA
-iw$dowlknum[iw$dowlknum=="none"] <- NA
-iw$dowlknum[iw$dowlknum=="NONE"] <- NA
-
-iw$dowlknum[iw$dowlknum=="none, part of Winnibigoshish"] <- "11-0147"
-
-# There are some dowlknum that use hyphens, but not according to the convention above
-# These all look good: CC-LLLL
-unique(iw$dowlknum[grepl("-", iw$dowlknum) & nchar(iw$dowlknum)==7])
-# None here:
-unique(iw$dowlknum[grepl("-", iw$dowlknum) & nchar(iw$dowlknum)==8])
-# Here's a mistake where there isn't a second hyphen
-unique(iw$dowlknum[grepl("-", iw$dowlknum) & nchar(iw$dowlknum)==9])
-# fix second hyphen
-iw$dowlknum[iw$dowlknum=="18-012601"] <- "18-0126-01"
-# These all look good; CC-LLLL-BB
-unique(iw$dowlknum[grepl("-", iw$dowlknum) & nchar(iw$dowlknum)==10])
-
-iw$parentdow <- substr(iw$dowlknum, 1, 7)
-
-## Walleye lakes----
-### UPDATE FILE PATH WHERE WAE DATA IS STORED ----
-wae_lakes <- read_csv("R and stan code/Data/wae_NR_class.csv")
-
-
-## Getting wae_lakes and iw to work together----
-
-unique(iw$dowlknum)
-unique(iw$parentdow)
-
-# Looks like a mostly clean list of DOWs with the leading zero problem + a couple combined entries
-unique(wae_lakes$DOW)
-wae_lakes$DOW[substr(wae_lakes$DOW, 1, 1)=="0"]
-
-# Breaking down what kinds of entries are in here
-unique(wae_lakes$DOW[nchar(wae_lakes$DOW)<=6])
-unique(wae_lakes$DOW[nchar(wae_lakes$DOW)==7])# these all look like counties 01 - 09 without the leading zero
-print(unique(wae_lakes$DOW[nchar(wae_lakes$DOW)==8]), max=1500)# these look like clean, 8 digit DOWs
-unique(wae_lakes$DOW[nchar(wae_lakes$DOW)>=9])# these should be fairly easy to account for
-
-iw%>%filter(dowlknum%in%"18-0269" & species=="zebra mussel")# infested
-iw%>%filter(dowlknum%in%"18-0268" & species=="zebra mussel")# infested
-iw%>%filter(dowlknum%in%"18-0311" & species=="zebra mussel")# infested
-iw%>%filter(dowlknum%in%"18-0270" & species=="zebra mussel")# not known to be infested
-
-# Pulling hyphens for infested waters, adding "00" for entries with just parent DOWs, 
-# then dropping leading zeros, should do the trick to match "iw" to "wae_lakes"
-iw_wae_fixed <- iw %>%
-  mutate(DOW=str_remove_all(dowlknum, "-")) %>%
-  mutate(DOW=ifelse(nchar(DOW)==6, paste(DOW, "00", sep=""), DOW)) %>%
-  mutate(DOW=ifelse(substr(DOW, 1, 1)=="0", substr(DOW, 2, 8), DOW)) %>%
-  filter(!(is.na(year) | is.na(species) | is.na(dowlknum)))
-
-unique(iw_wae_fixed$DOW[nchar(iw_wae_fixed$DOW)<=6])
-unique(iw_wae_fixed$DOW[nchar(iw_wae_fixed$DOW)==7])# these all look like counties 01 - 09 without the leading zero
-unique(iw_wae_fixed$DOW[nchar(iw_wae_fixed$DOW)==8])# these look like clean, 8 digit DOWs
-unique(iw_wae_fixed$DOW[nchar(iw_wae_fixed$DOW)>=9])# these should be fairly easy to account for
-
-# Identifying which infested waters lakes have walleye
-iw_wae_fixed$wae <- ifelse(iw_wae_fixed$DOW%in%wae_lakes$DOW, 1, 0)
-
-# The combined dow entries above will have wae=0 here, so need to change that manually
-iw_wae_fixed$wae[iw_wae_fixed$parentdow=="18-0269"] <- 1
-iw_wae_fixed$wae[iw_wae_fixed$parentdow=="18-0268"] <- 1
-iw_wae_fixed$wae[iw_wae_fixed$parentdow=="18-0311"] <- 1
-
-# Filtering down to confirmed zebra mussel infestations, then grouping by parentdow
-# and summarizing to the earliest designation for a parent dow and wae presence
-iw_wae_zm_parentdow <- iw_wae_fixed %>%
-  filter(species=="zebra mussel" & connected=="confirmed") %>%
-  group_by(parentdow) %>%
-  summarize(year=min(year), 
-            wae=max(wae)) %>%
-  ungroup()
-
-# Grouping by year, estimating number of infestations in that year, then 
-# taking the cumulative sum of infestations.
-iw_wae_zm_parentdow_yrsum <- iw_wae_zm_parentdow %>%
-  group_by(year) %>%
-  summarize(n=n()) %>%
-  ungroup() %>%
-  mutate(cumsum_n=cumsum(n))
-
-# Doing the same, but for walleye lakes
-iw_wae_zm_parentdow_yrsum_wae <- iw_wae_zm_parentdow %>%
-  filter(wae==1) %>%
-  group_by(year) %>%
-  summarize(n=n()) %>%
-  ungroup() %>%
-  mutate(cumsum_n=cumsum(n))
-
-# Summaries and data viz ----
-
-# There are 299 lakes (unique 6-digit DOWs) with ZM and
-# 231 of those lakes are walleye lakes.
-iw_wae_zm_parentdow_yrsum %>% filter(year==2022) #299
-iw_wae_zm_parentdow_yrsum_wae %>% filter(year==2022) #231
-
-# That's 77% (77.26) of all ZM lakes
-231/299
-
-# Up until 2019 
-iw_wae_zm_parentdow_yrsum %>% filter(year==2019) #229
-iw_wae_zm_parentdow_yrsum_wae %>% filter(year==2019) #176
-
-#77 (76.86) % of lakes invaded with ZM as of 2019 are walleye lakes
-176/229
-
-# There are 1435 known walleye lakes in the state.
-# There are 11,842 lakes > 10 acres in the state. https://www.dnr.state.mn.us/faq/mnfacts/water.html
-
-# Statewide ZM known infestation rate = 2.5%, 11,842 lakes in MN that are 10+ acres
-299/11842
-
-# ZM known infestation rate in known walleye lakes = 16% 
-231/1435
-
-# ZM known infestation rate in known walleye lakes through 2019 = 12.26%
-176/1435
-
-# ZM known infestation rate in lakes not known to have walleye = 0.7%
-68/10407
-
-# ZM known infestation rate in lakes not known to have walleye = 0.5% through 2019
-(229-176)/(11842-1435)
-
-# ZM are nearly 25 times more likely to be found in lakes known to contain walleye
-(231/1435)/(68/10407)
-
-# ZM are 24 times more likely to be found in lakes known to contain walleye through 2019
-(176/1435)/(53/10407)
-
-# number of ZM invaded lakes through 2019
-ZM_WAE_2019 <- iw_wae_zm_parentdow_yrsum_wae %>%
-  filter()
-```
-

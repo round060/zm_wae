@@ -39,21 +39,15 @@ library(shinystan)
 
 
 ```{r, message=FALSE}
-GN_Final <- read_csv("./cleaned_data/gn_model_data.csv") %>%
-  mutate(ZM_LAKE = ifelse(year_confirmed == 0, "Uninvaded", "ZM Invaded"))
+GN_Final <- read_csv("./cleaned_data/gn_for_model.csv") 
 
-#out <- readRDS(file='./models/model_out_zip_GN_nosecchi.rds')
-out <- readRDS(file="./models/model_out_zip_GN_nosecchi_3gddanomalyCR.rds" )
+out <- readRDS(file="./models/zinb_gn_model_brms.rds" )
 
 
 # Convert mcmc draws to matrix
 posterior <- as.matrix(out)
 
-
-
-
-posterior_df <- as.data.table(posterior)[ ,c(1:16),] #take only the covariate columns
-
+posterior_df <- as.data.table(posterior)[ ,c(1:13),] #take only the covariate columns
 ```
 
 
@@ -72,8 +66,8 @@ MN_Counties <- map_data("county")%>%
 GN_Lakes_ZM <- ggplot(data = MN_Counties, mapping = aes(x = long, y = lat, group=group))+
   coord_fixed(1.3) +
   geom_polygon(color= "gray85", fill = "gray90")+
-  geom_point(data=GN_Final, aes(x= x, y = y, group=25, color=as.factor(ZM_LAKE),
-                                      shape = as.factor(ZM_LAKE)),alpha = 0.3, size =3) +
+  geom_point(data=GN_Final, aes(x= x, y = y, group=25,  color=as.factor(treatment),
+                                      shape = as.factor(treatment)),alpha = 0.3, size =3) +
   scale_color_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM Invaded"), values = c("#0571b0", "#ca0020"))+
   scale_shape_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM Invaded"), values = c(16, 15))+
   labs(color = "ZM Invasion Status",x= "Longitude", y ="Latitude")+
@@ -157,19 +151,31 @@ BACI Figure
 
 Data
 ```{r}
-NoZM_Pre <- exp(posterior[,"b_0"]) 
+NoZM_Pre <- as.numeric(exp(posterior_df$b_Intercept))
+
+
+#sd = sqrt(posterior[, "sigma_lake"]^2 + posterior[, "sigma_year"]^2)
+#NoZM_Pre <- exp(posterior[,"b_0"] + rnorm(length(posterior[, "sigma_lake"]), 0, sd))
+
+
 mean(NoZM_Pre)
 quantile(NoZM_Pre, c(0.025, 0.975))
+
 # Control Post
-NoZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_post"]) 
+NoZM_Post <- as.numeric(exp(posterior_df$b_Intercept + posterior_df$b_post))
+#NoZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_post"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
 mean(NoZM_Post)
 quantile(NoZM_Post, c(0.025, 0.975))
+
 # ZM Treatment Pre
-ZM_Pre <- exp(posterior[,"b_0"] + posterior[,"b_trt"]) 
+ZM_Pre <- as.numeric(exp(posterior_df$b_Intercept + posterior_df$b_treatment))
+#ZM_Pre <- exp(posterior[,"b_0"] + posterior[,"b_trt"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
 mean(ZM_Pre)
 quantile(ZM_Pre, c(0.025, 0.975))
+
 # ZM Treatment Post
-ZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_post"] +  posterior[,"b_trt"] +  posterior[,"b_post_trt"]) 
+ZM_Post <- as.numeric(exp(posterior_df$b_Intercept + posterior_df$b_treatment + posterior_df$b_post + posterior_df$`b_post:treatment`))
+#ZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_trt"] +posterior[,"b_post_trt"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
 mean(ZM_Post)
 quantile(ZM_Post, c(0.025, 0.975))
 
@@ -205,7 +211,7 @@ BACI_Figure <-ggplot(BACI_PLOT_DAT , aes(x = Levels, y = Mean, ymin = Quant_2.5,
         axis.title.x = element_blank())#,
         
 BACI_Figure
-#ggsave("./figures/figure_2_GN.jpeg", height = 10, width = 10)
+ggsave("./zinb_figures/figure_2_GN.jpeg", height = 10, width = 10)
 ```
 
 
@@ -216,16 +222,16 @@ Posterior Distributions
 color_scheme_set(scheme = "blue")
 post_dist_blue2 <- mcmc_areas(
     posterior,
-    pars = c("b_trt", "b_post", "b_post_trt","b_lake_area", "b_fry", "b_fgl", 
-             "b_survey_gdd_sum", "b_gdd"),
+    pars = c("b_treatment", "b_post", "b_post:treatment","b_lake_area_s", "b_fry1", "b_fingerling1", 
+             "b_anomaly_gdd_5_s", "b_median_gdd_5_s"),
     prob = 0.95, # 95% intervals
     prob_outer = 0.99, # 99%
     point_est = "median",
     area_method = "scaled height"
   ) + 
   geom_vline(xintercept = 0, color = "red", linetype = "dashed") + 
-  scale_y_discrete(limit = c("b_trt", "b_post", "b_post_trt","b_lake_area", "b_fry", "b_fgl", 
-                             "b_survey_gdd_sum", "b_gdd"),
+  scale_y_discrete(limit = c("b_treatment", "b_post", "b_post:treatment","b_lake_area_s", "b_fry1", "b_fingerling1", 
+                             "b_anomaly_gdd_5_s", "b_median_gdd_5_s"),
                    labels = c("Zebra Mussels", "Post Invasion", "ZM * Post", "Lake Area", 
                               "Stocked (fry)", "Stocked (fingerlings)", 
                               "GDD (age 0 - 2)", "Lake median GDD")) +
@@ -234,7 +240,7 @@ post_dist_blue2 <- mcmc_areas(
   theme_classic()
 
 post_dist_blue2
-#ggsave("./figures/figure_3_GN.jpeg", height = 10, width = 10)
+ggsave("./zinb_figures/figure_3_GN.jpeg", height = 10, width = 10)
 ```
 
 
@@ -245,20 +251,20 @@ Stocking Figure
 ```{r, warning = FALSE}
 # get stocking estimates
 
-not_stocked <- exp(posterior[,"b_0"]) 
+not_stocked <- exp(posterior_df$b_Intercept) 
 
-stocked_fry <- exp(posterior[,"b_0"] + posterior[,"b_fry"]) 
+stocked_fry <- exp(posterior_df$b_Intercept + posterior_df$b_fry1) 
 
-stocked_fgl <- exp(posterior[,"b_0"] + posterior[,"b_fgl"])
+stocked_fgl <- exp(posterior_df$b_Intercept + posterior_df$b_fingerling1)
 
 
-stocking_estimates <- tibble(
+stocking_estimates <- tibble(stocking_estimates <- tibble(stocking_estimates <- tibble(
   Stocking_Status = c("Not Stocked", "Fry Stocked", "Fingerling Stocked"),
   Mean = c(mean(not_stocked), mean(stocked_fry), mean(stocked_fgl)),
   Quant_2.5 = c(quantile(not_stocked, 0.025), quantile(stocked_fry, 0.025), quantile(stocked_fgl, 0.025)),
   Quant_97.5 = c(quantile(not_stocked, 0.975), quantile(stocked_fry, 0.975), quantile(stocked_fgl, 0.975)),
   Quant_83 = c(quantile(not_stocked, 0.83), quantile(stocked_fry, 0.83), quantile(stocked_fgl, 0.83)),
-  Quant_17 = c(quantile(not_stocked, 0.17), quantile(stocked_fry, 0.17), quantile(stocked_fgl, 0.17)))
+  Quant_17 = c(quantile(not_stocked, 0.17), quantile(stocked_fry, 0.17), quantile(stocked_fgl, 0.17)))))
 
 
 stocking_estimates_DAT <- stocking_estimates %>%
@@ -279,69 +285,24 @@ Stocking_Figure <-ggplot(stocking_estimates_DAT , aes(x = Stocking_Status, y = M
         axis.title.x = element_blank())
         
 Stocking_Figure
-#ggsave("./figures/figure_4_GN.jpeg", height = 10, width = 10)
+ggsave("./zinb_figures/figure_4_GN.jpeg", height = 10, width = 10)
 ```
+
+
 
 
 # Figure 5
 
 Environmental effects
 
-Model Data
-```{r}
-dat <- read.csv('./cleaned_data/gn_model_data.csv') %>%
-  mutate(ZM_LAKE = ifelse(year_confirmed == 0, 0, 1))  %>% 
-  mutate(time = ifelse(year_confirmed == 0, year_confirmed.y, year_confirmed),
-         post = ifelse(year > time, 1, 0),
-         treatment = ZM_LAKE # USING ZM_LAKE_HERE
-         )%>%
-  mutate(INVASION_STATUS_NEW = case_when(ZM_LAKE == 0 ~ "Uninvaded",
-                                         ZM_LAKE == 1 & post == 0 ~ "PRE_ZM",
-                                         ZM_LAKE == 1 & post == 1 ~ "POST_ZM"),
-         log_acres = log(acres))
 
-
-# Create lake ID
-dat$lake.id <- as.numeric(as.factor(as.numeric(as.factor(dat$lake.id))))
-# Create year ID
-dat$year.id <- as.numeric(as.factor(as.numeric(as.factor(dat$year))))
-nyear <- length(unique(dat$year.id))
-
-# Sort data by site
-dat <- dat %>% 
-  arrange(lake.id)
-
-```
-
-Lake-level predictors
-```{r}
-# Prepare lake-level predictors
-lake_area <- summaryBy(log_acres ~ lake.id, data=dat, FUN=mean)
-gdd <- summaryBy(median_gdd_5 ~ lake.id, data=dat, FUN=mean)
-#secchi <- summaryBy(median_secchi_lake ~ lake.id, data=dat, FUN=mean) # not used in model
-
-# Transform as needed and scale
-lake_area2 <- as.numeric(scale(lake_area$log_acres.mean))
-gdd2 <- as.numeric(scale(gdd$median_gdd_5.mean))
-#secchi2 <- as.numeric(scale(secchi$median_secchi_lake.mean)) # not used in model
-
-```
-
-Observation-level predictors
-```{r}
-gdd_sum <- as.numeric(scale(dat$gdd_wtr_5c_year2 + dat$gdd_wtr_5c_year1 + dat$gdd_wtr_5c_year0))
-```
-
-
-
-GDD annual 5C from year of survey (sum)
 ```{r}
 # Begin predict code for first three year GDD
 
-b_gdd_sum <- posterior_df$b_survey_gdd_sum
-b_0 <- posterior_df$b_0
+b_gdd_sum <- posterior_df$b_anomaly_gdd_5_s
+b_0 <- posterior_df$b_Intercept
 
-sum <- (dat$gdd_wtr_5c_year0 + dat$gdd_wtr_5c_year1 + dat$gdd_wtr_5c_year2) - (3*dat$median_gdd_5) 
+sum <- GN_Final$anomaly_gdd_5 
 
 lower_gdd = min(sum)
 upper_gdd = max(sum)
@@ -366,7 +327,7 @@ gdd_Plot_sum <- gdd.plot.anomaly %>%
   ggplot(aes(x = gdd)) +
   geom_line(aes(x= gdd, y = mean), size = 2)+
   geom_ribbon(aes(ymin = low, ymax = high), alpha= .2) +
-  labs(x = "GDD Anomaly from Age-0, Age-1, Age-2 (base 5°C)", y = "Predicted CPUE")+
+  labs(x = "GDD Anomaly from Age-0 (base 5°C)", y = "Predicted CPUE")+
   scale_x_continuous(breaks = scales::pretty_breaks(n = 5)) +
   theme_classic()
 
@@ -381,14 +342,14 @@ Lake area
 # Begin predict code
 
 b_area <- posterior_df$b_lake_area
-b_0 <- posterior_df$b_0
+b_0 <- posterior_df$b_Intercept
 
 # Lake area range
-lower_area = min(dat$log_acres)
-upper_area = max(dat$log_acres)
+lower_area = min(GN_Final$log_acres)
+upper_area = max(GN_Final$log_acres)
 log_lake_area_range <- seq(lower_area, upper_area, by= 0.1) #935 numbers
 
-log_lake_area_range_standardized <- wiqid::standardize2match(log_lake_area_range, dat$log_acres)
+log_lake_area_range_standardized <- wiqid::standardize2match(log_lake_area_range, GN_Final$log_acres)
 
 area.plot <- data.frame(area = log_lake_area_range, 
                         area_s = log_lake_area_range_standardized, 
@@ -413,20 +374,19 @@ area_Plot
 
 
 Median GDD (1993 - 2019), lake level
-```{r, eval = F}
+```{r}
 # Begin predict code
-b_gdd_LL <- posterior_df$b_gdd
-b_0 <- posterior_df$b_0
+b_gdd_LL <- posterior_df$b_median_gdd_5_s
+b_0 <- posterior_df$b_Intercept
 
 # Range of observed lake level GDD's (base 5)
-range(dat$median_gdd_5)
-lower_gdd = range(dat$median_gdd_5)[1]
-upper_gdd = range(dat$median_gdd_5)[2]
+lower_gdd = min(GN_Final$median_gdd_5)
+upper_gdd = max(GN_Final$median_gdd_5)
 
 
 gdd_LL_range <- seq(lower_gdd, upper_gdd, by= 5)
 # Standardized the range
-gdd_LL_range_standardized <- wiqid::standardize2match(gdd_LL_range, dat$median_gdd_5)
+gdd_LL_range_standardized <- wiqid::standardize2match(gdd_LL_range, GN_Final$median_gdd_5)
 
 # Output storage DF
 gdd.plot <- data.frame(gdd = gdd_LL_range, 
@@ -454,15 +414,12 @@ gdd_LL_Plot
 
 # Combine into one figure
 ```{r}
-Fig_5 <- plot_grid(gdd_LL_Plot, gdd_Plot_sum, area_Plot,
+Fig_5 <- plot_grid(gdd_LL_Plot, gdd_Plot_sum,  area_Plot,
           labels = c("A", "B", "C"),
           label_size = 14)
 Fig_5
-#ggsave("./figures/figure_5_GN.jpeg", height = 10, width = 10)
+ggsave("./zinb_figures/figure_5_gn.jpeg", height = 10, width = 10)
 ```
-
-
-
 
 
 # Summaries referenced in the manuscript, Table 1, and figures
