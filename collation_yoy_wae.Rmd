@@ -13,8 +13,11 @@ library(sf)
 library(mgcv)
 library(RANN)
 
+# From Mn geospatial commons
+# Minnesota Department of Natural Resources (MNDNR). 2021. Lake Bathymetric Outlines, Contours, and DEM.
 mn_lakes <- readRDS("./data/mndow_lakes_sf_allDataUntransformed.rds")
 
+#From MidFish: A Large-Scale Aggregation of State Fisheries Data from the Midwestern United States from 1940 - 2023 - ScienceBase-Catalog
 mw_data <- open_dataset("./data/hive", partitioning = c("state"))
 #glimpse(mw_data)
 ```
@@ -160,6 +163,7 @@ new_surveys_spatial <- merge(x = new_surveys, y = mn_lakes, by = "lake_id", all.
 
 # Get invasion status for all lakes
 ```{r}
+# From https://www.dnr.state.mn.us/invasives/ais/infested.html
 ais <- readxl::read_excel("./data/infested-waters.xlsx") %>% 
   dplyr::filter(ais == "zebra mussel") %>% select(!Column1) %>%
   dplyr::filter(dow != "NA", dow != "na") %>%
@@ -181,6 +185,7 @@ new_surveys_ais <- merge(x = new_surveys_spatial, y = ais,
 
 # Get new stocking 
 ```{r}
+# Personal communication MN DNR 
 stocking <- read.csv("./data/mn_wae_stocking.csv") %>% 
   rename(lake_id = DOW, year = Year) %>%
   mutate(lake_id = ifelse(lake_id == "04003500", "04003501", lake_id)) %>%
@@ -194,6 +199,7 @@ new_surveys_stocking <- merge(x = new_surveys_ais, y = stocking,
 
 # Get Secchi - EVAL = FALSE because not using secchi
 ```{r, eval = F}
+
 secchi <- read.csv("./data/MN_AnnualSecchi_update.csv") %>%
   select(year, median_secchi, Prmnn_I) %>%
   mutate(nhdhr.id = paste0("nhdhr_", Prmnn_I))
@@ -231,6 +237,7 @@ rm(secchi.full); rm(secchi); rm(nhd.id)
 
 # Get Temp data
 ```{r}
+# From Corson-Dosch -  https://doi.org/10.5066/P9EQQER7
 current_temps <- read_feather("./data/lake_temperature_metrics_GLM_NLDAS.feather") %>% 
   dplyr::select(site_id, year, gdd_wtr_0c, gdd_wtr_5c, gdd_wtr_10c)
 

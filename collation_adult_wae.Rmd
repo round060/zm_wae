@@ -46,19 +46,12 @@ filter_table_fish <-
 
 # Read in some fun data
 ```{r}
+# From a beta version of MidFish: A Large-Scale Aggregation of State Fisheries Data from the Midwestern United States from 1940 - 2023 - ScienceBase-Catalog
 aged <- open_dataset("./data/age_assigned_data/mn_halk_aged_data/part-0.parquet") %>% collect() 
 
+# From Mn geospatial commons
+# Minnesota Department of Natural Resources (MNDNR). 2021. Lake Bathymetric Outlines, Contours, and DEM.
 mn_lakes <- readRDS("./data/mndow_lakes_sf_allDataUntransformed.rds")
-
-stocking <- read.csv("./data/mn_wae_stocking.csv") %>%
-  rename(lake.id = DOW, year = Year) %>%
-  mutate(non.fry = fgl.pa + adl.pa + yrl.pa + frl.pa,
-         lake.id = mnsentinellakes::fixlakeid(lake.id),
-         non.fry = ifelse(is.na(non.fry), 0, non.fry)) %>%
-  dplyr::select(lake.id, year, non.fry)
-
-stocking_summarized <- stocking %>% group_by(lake.id, year) %>%
-  summarize(non.fry = sum(non.fry), latest = max(year))
 ```
 
 
@@ -344,7 +337,7 @@ mn_gn_lakes_clean <- as.data.frame(mn_gn_lakes) %>%
 gn_spatial <- merge(x = age3_walleye_surveys, y = mn_gn_lakes_clean, 
                     by = "lake.id", all.x = T)
 
-
+# Personal Communication MN DNR
 stocking_baby <- read.csv("./data/mn_wae_stocking.csv") %>% 
   rename(lake_id = DOW, year = Year) %>%
   mutate(lake_id = ifelse(lake_id == "04003500", "04003501", lake_id),
@@ -358,7 +351,7 @@ gn_stocking <- merge(x = gn_spatial, y = stocking_baby,
                      all.x = T) %>%
   mutate(across(FRY:FGL, ~ ifelse(is.na(.), 0, .))) 
 
-
+# From https://www.dnr.state.mn.us/invasives/ais/infested.html
 ais <- readxl::read_excel("./data/infested-waters.xlsx") %>% 
   dplyr::filter(ais == "zebra mussel") %>% select(!Column1) %>%
   dplyr::filter(dow != "NA", dow != "na") %>%
@@ -382,6 +375,7 @@ gn_ais <- merge(x = gn_stocking, y = ais,
 
 # Add in GDD
 ```{r}
+# From Corson-Dosch -  https://doi.org/10.5066/P9EQQER7
 current_temps <- read_feather("./data/lake_temperature_metrics_GLM_NLDAS.feather") %>% 
   dplyr::select(site_id, year, gdd_wtr_5c)
 
