@@ -1,1 +1,2 @@
-# zm_wae
+# Collation and analysis files for a project seekeing to determine the effect of Zebra Mussels on Walleye recruitment. 
+# In support of the article titled "Declines in walleye recruitment and abundance following zebra mussel invasion in Minnesota lakes "

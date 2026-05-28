@@ -46,7 +46,6 @@ filter_table_fish <-
 
 # Read in some fun data
 ```{r}
-#this dataset covers all lengthed fish from the big 8 species we targeted in the project
 aged <- open_dataset("./data/age_assigned_data/mn_halk_aged_data/part-0.parquet") %>% collect() 
 
 mn_lakes <- readRDS("./data/mndow_lakes_sf_allDataUntransformed.rds")
@@ -154,21 +153,24 @@ adult_walleye_cpue_any_alk <- adult_walleye_age_any_alk %>%
 adult_walleye_cpue <- rbind(adult_walleye_cpue_any_alk, adult_walleye_zeroes)
   
 # Check how much of different data we have
-
-
-all_aged <- adult_walleye_cpue %>% filter(all_aged == 1)
+all_aged <- adult_walleye_cpue %>% filter(all_aged == 1) %>% mutate(age_cat = "all aged")
 # 2638
 
-not_all_aged_year_alk <- adult_walleye_cpue %>% filter(all_aged == 0) %>% filter(alk == "year")
+not_all_aged_year_alk <- adult_walleye_cpue %>% filter(all_aged == 0) %>% filter(alk == "year")  %>% 
+  mutate(age_cat = "year")
 #603
 
-not_all_aged_lake_alk <- adult_walleye_cpue %>% filter(all_aged == 0) %>% filter(alk == "lake.id")
+not_all_aged_lake_alk <- adult_walleye_cpue %>% filter(all_aged == 0) %>% filter(alk == "lake.id") %>% 
+  mutate(age_cat = "lake")
 #2122
 
 less_suitable <- adult_walleye_cpue %>% filter(all_aged == 0) %>% filter(alk != "year") %>%
   select(lake.name, lake.id, year, survey.type, sampling.method, effort.ident, count, aged, proportion_aged)
 
-walleye_survey_cpue <- rbind(all_aged, not_all_aged_lake_alk, not_all_aged_year_alk) %>% filter(year > 2005) %>%
+
+
+
+walleye_survey_cpue <- rbind(all_aged, not_all_aged_lake_alk, not_all_aged_year_alk) %>% 
   mutate(survey_id = str_c(lake.id, year, total.effort.1, sampling.method))
 
 
@@ -300,9 +302,6 @@ temp_zeroes <- walleye_survey_cpue %>% filter(!survey_id %in% adult_walleye_cpue
 
 age3_walleye_surveys <- rbind(adult_walleye_cpue_aged, temp_zeroes) %>% 
   mutate(lake.id = fixlakeid(lake.id))
-
-
-
 
 ```
 
@@ -455,17 +454,18 @@ surveys_gn <- merge(x = surveys_no_temp , y = filtered_temp,
 #763 lake surveys
 #337 lake-year surveys
 ```{r}
-year_3_fish <- surveys_gn %>% filter(year < 2022) %>%
+year_3_fish <- surveys_gn %>% filter(year <= 2022) %>%
   mutate(year.listed = ifelse(is.na(year.listed), 0, year.listed),
          year_confirmed = ifelse(is.na(year_confirmed), 0, year_confirmed),
          infested = ifelse(is.na(infested), 0, infested)) %>%
   #drop_na() %>%
   select(!site_id)
   
-unique(year_3_fish$lake.id)
+length(unique(year_3_fish$lake.id))
 
-#write.csv(year_3_fish, "./cleaned_data/year_3_fish_lake_age_alk.csv", row.names = F)
+write.csv(year_3_fish, "./cleaned_data/year_3_fish_lake_age_alk.csv", row.names = F)
 year_3_fish <- read.csv("./cleaned_data/year_3_fish_lake_age_alk.csv")
+
 ```
 
 

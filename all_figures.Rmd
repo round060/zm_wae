@@ -1,0 +1,842 @@
+---
+title: "Figures"
+output: html_document
+date: "2025-12-12"
+---
+
+```{r setup, include=FALSE}
+#remotes::install_github("https://github.com/mikemeredith/wiqid")
+library(tidyverse)
+library(ggthemes)
+library(viridis)
+library(ggspatial)
+library(cowplot)
+library(grid)
+library(data.table)
+library(bayesplot)
+
+EF_Final <- read_csv("./cleaned_data/ef_for_model.csv")
+GN_Final <- read_csv("./cleaned_data/gn_for_model.csv") 
+
+
+stocking <- read.csv("./data/mn_wae_stocking.csv") %>% 
+  rename(lake_id = DOW, year = Year) %>%
+  mutate(lake_id = ifelse(lake_id == "04003500", "04003501", lake_id)) %>%
+  select(lake_id, year, FRY, FGL, fry.pa, fgl.pa) %>% 
+  filter(lake_id %in% EF_Final$lake_id)
+```
+
+# Lake stats
+```{r}
+length(unique(EF_Final$lake_id))
+ef_number <- EF_Final %>% group_by(lake_id) %>% count()
+median(ef_number$n)
+# Number invaded lakes
+EF_Final %>% distinct(lake_id, .keep_all = T) %>% summarize(sum = sum(treatment))
+
+
+
+length(unique(GN_Final$lake.id))
+gn_number <- GN_Final %>% group_by(lake.id) %>% count()
+median(gn_number$n)
+# Number invaded lakes
+GN_Final %>% distinct(lake.id, .keep_all = T) %>% summarize(sum = sum(treatment))
+```
+
+
+```{r}
+out_gn <- readRDS(file="./models/zipnb_gn_model_brms.rds" )
+out_ef <- readRDS(file='./models/nb_ef_model_brms.rds')
+summary(out_gn)
+summary(out_ef)
+
+# Convert mcmc draws to matrix
+posterior_gn_matrix <- as.matrix(out_gn)
+posterior_gn <- as.data.table(posterior_gn_matrix)[ ,c(1:13),] #take only the covariate columns
+
+# Convert mcmc draws to matrix
+posterior_ef_matrix <- as.matrix(out_ef)
+posterior_ef <- as.data.table(posterior_ef_matrix)[ ,c(1:13),] #take only the first 13 columns
+```
+
+
+# Figure 1
+
+Map showing locations of lakes and whether or not they have zebra mussels 
+```{r Figure 1, warning = FALSE, message = FALSE}
+MN <- map_data("state")%>% filter(region=="minnesota")
+
+# walleye lakes, ZM in red, rest in blue
+EF_Lakes_ZM <- 
+  ggplot(data = MN, mapping = aes(x = long, y = lat, group=group))+
+  coord_fixed(1.3) +
+  geom_polygon(fill = "white", color = "black", size = 1.5)+
+  geom_point(data = EF_Final, aes(x= x, y = y, group=25, color=as.factor(treatment),
+                                  shape = as.factor(treatment)),alpha = 0.15, size = 4) +
+  scale_color_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM Invaded"),
+                     values = c("#00BFC4", "#F8766D")) +  
+  scale_shape_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM Invaded"), values = c(16, 15)) +
+  guides(color = guide_legend(override.aes = list(alpha = .5)), shape = guide_legend(override.aes = list(alpha = .5))) +
+  labs(color = "ZM Invasion Status",x= "Longitude", y ="Latitude")+
+  theme_void() +
+  theme(legend.position = "bottom", legend.box.background = element_rect(color = "gray85"),
+        legend.box.margin = margin(t = 2, r = 4, b = 2, l = 4),
+        legend.key = element_rect(color = "gray90"),
+        legend.text = element_text(size = 16),
+        legend.title = element_text(size = 18, face = "bold"),
+        legend.key.size = unit(1.5, "cm"))
+
+EF_Lakes_ZM
+```
+
+```{r Figure 1B, warning = FALSE, message = FALSE}
+MN <- map_data("state")%>% filter(region=="minnesota")
+
+# walleye lakes, ZM in red, rest in blue
+GN_Lakes_ZM <- ggplot(data = MN, mapping = aes(x = long, y = lat, group=group))+
+  coord_fixed(1.3) +
+  geom_polygon(color= "black", fill = "white", size = 1.5)+
+  geom_point(data=GN_Final, aes(x= x, y = y, group=25,  color=as.factor(treatment),
+                                      shape = as.factor(treatment)),alpha = 0.15, size = 4) +
+  scale_color_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM Invaded"),
+                     values = c("#00BFC4", "#F8766D")) +
+  scale_shape_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM Invaded"), values = c(16, 15))+
+  labs(color = "ZM Invasion Status") +
+  theme_void() +
+  theme(legend.position = "none")
+
+GN_Lakes_ZM
+```
+
+Bounding box and North America Map for inset
+```{r country}
+canadamap <- map_data("world", c("Canada")) 
+
+mexicomap <- map_data("world", c("Mexico"))
+
+all_states <- map_data("state")
+
+lakes <- map_data("lakes") #pulls in great lakes and large lakes
+
+states <- subset(all_states, region %in% c("minnesota"))
+
+xlim <- range(states$long) + c(-.3, 0.1) 
+ylim <- range(states$lat) + c(-0.7, .65)
+# the +/- 0.3 creates an offset so the bounding box is not counting off MN
+
+N_AM_map <- ggplot() +  
+  geom_map(data = canadamap, aes(map_id = region, group = subregion),  
+           map = canadamap, color = "black", fill = "grey90") +
+  # creates a map of Canada
+  geom_map(data = mexicomap, aes(map_id = region, group = subregion),  
+           map = mexicomap, color = "black", fill = "grey90")+
+  #creates a map of Mexico
+  geom_map(data = all_states, aes(map_id = region), 
+           map = all_states, color = "black", fill = "grey90") +
+  # Creates a map of US states with the existing Canada map
+  geom_map(data = lakes,aes(map_id = region, group = subregion),
+           map = lakes, color = "black", fill = "lightskyblue2")+
+  #makes the lines around the great lakes cleaner, and can fill them with blue
+  geom_rect(aes(xmin = xlim[1], xmax = xlim[2], ymin = ylim[1], ymax = ylim[2]), 
+            colour = "red", fill = NA, lwd = 1) + 
+  # creates a red rectangle around the y- and x-lim
+  coord_map(xlim = c(-125, -66), ylim = c(25, 50)) +
+  # defines the cutoff/edges of the map
+  labs(x = NULL, y = NULL) + theme_bw() + theme(panel.grid = element_blank())+
+  theme(panel.background = element_rect(fill = "lightskyblue2", color = "black"),
+        axis.text.x = element_blank(), #remove x axis labels
+        axis.ticks.x=element_blank(), #remove x axis ticks
+        axis.text.y=element_blank(),  #remove y axis labels
+        axis.ticks.y=element_blank()) #remove y axis ticks
+```
+
+
+```{r inset}
+Final_Inset_Map <- ggdraw()+
+  draw_plot(EF_Lakes_ZM +
+              annotation_north_arrow(location = "br", 
+                         which_north = "grid",
+                         pad_x = unit(0.5, "in"),
+                         pad_y = unit(0.5, "in"),
+                         style = north_arrow_orienteering,
+                         width = unit(.9, "cm"),
+                         height = unit(.9, "cm")))+ #adds scale bar
+  draw_plot(N_AM_map, x = 0.7, y = 0.3, width = .3, height = .25)
+
+Final_Inset_Map
+
+plot_grid(Final_Inset_Map, GN_Lakes_ZM, labels = c("A", "B"), label_size = 20)
+ggsave("./figures/Figure_1.jpeg", dpi = 600, width = 18, height = 10)
+```
+
+
+# Figure 2 (BACI)
+
+EF data
+```{r}
+NoZM_Pre <- as.numeric(exp(posterior_ef$b_Intercept))
+
+#sd = sqrt(posterior[, "sigma_lake"]^2 + posterior[, "sigma_year"]^2)
+#NoZM_Pre <- exp(posterior[,"b_0"] + rnorm(length(posterior[, "sigma_lake"]), 0, sd))
+
+# Control pre
+mean(NoZM_Pre)
+quantile(NoZM_Pre, c(0.025, 0.975))
+
+# Control Post
+NoZM_Post <- as.numeric(exp(posterior_ef$b_Intercept + posterior_ef$b_post))
+#NoZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_post"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
+mean(NoZM_Post)
+quantile(NoZM_Post, c(0.025, 0.975))
+
+# ZM Treatment Pre
+ZM_Pre <- as.numeric(exp(posterior_ef$b_Intercept + posterior_ef$b_treatment))
+#ZM_Pre <- exp(posterior[,"b_0"] + posterior[,"b_trt"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
+mean(ZM_Pre)
+quantile(ZM_Pre, c(0.025, 0.975))
+
+# ZM Treatment Post
+ZM_Post <- as.numeric(exp(posterior_ef$b_Intercept + posterior_ef$b_treatment + posterior_ef$b_post + posterior_ef$`b_post:treatment`))
+#ZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_trt"] +posterior[,"b_post_trt"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
+mean(ZM_Post)
+quantile(ZM_Post, c(0.025, 0.975))
+
+## CALULATIONS
+
+# Sentence 1 - results GN
+ZM_BACI <- exp(posterior_ef$`b_post:treatment`)
+mean(ZM_BACI)
+quantile(ZM_BACI, c(0.025, 0.975))
+(mean(ZM_BACI) - 1) * 100
+(quantile(ZM_BACI, c(0.025, 0.975)) - 1) * 100
+
+
+# Sentence 2 - Results GN
+# Difference: ZM_Post - ZM_Pre
+ZM_Diff_ef <- ZM_Post - ZM_Pre
+print("Zebra mussel lakes")
+mean(ZM_Diff_ef)
+quantile(ZM_Diff_ef, c(0.025, 0.975))
+# Percent change: ZM Post relative to ZM Pre
+ZM_PctChange_ef <- (ZM_Post - ZM_Pre) / ZM_Pre * 100
+print("Percent change in zebra mussel lakes")
+mean(ZM_PctChange)
+quantile(ZM_PctChange, c(0.025, 0.975))
+
+# Sentence 3 - Results GN
+# Difference: NO ZM_Post - NO ZM_Pre
+NOZM_Diff_ef <- NoZM_Post - NoZM_Pre
+print("Non zebra mussel lakes")
+mean(NOZM_Diff_ef)
+quantile(NOZM_Diff_ef, c(0.025, 0.975))
+# Percent change: NO ZM Post relative to NO ZM Pre
+NOZM_PctChange_ef <- (NoZM_Post - NoZM_Pre) / NoZM_Pre * 100
+print("Percent change in non zebra mussel lakes")
+mean(NOZM_PctChange_ef)
+quantile(NOZM_PctChange_ef, c(0.025, 0.975))
+
+# Sentence 4 - Results GN
+# Difference between ZM and non ZM lakes
+pre_diff <-  ZM_Pre - NoZM_Pre
+print("Pre invasion lakes")
+mean(pre_diff)
+quantile(pre_diff, c(0.025, 0.975))
+# Percent change: non-zm to zm lakes
+pre_PctChange <- (ZM_Pre - NoZM_Pre) / NoZM_Pre * 100
+mean(pre_PctChange)
+quantile(pre_PctChange, c(0.025, 0.975))
+
+
+BACI_Estimates1 <- tibble(
+  Category = c("No_ZM_Pre", "No_ZM_Post", "ZM_Pre", "ZM_Post"),
+  Mean = c(mean(NoZM_Pre), mean(NoZM_Post), mean(ZM_Pre), mean(ZM_Post)),
+  Quant_2.5 = c(quantile(NoZM_Pre, 0.025), quantile(NoZM_Post, 0.025), quantile(ZM_Pre, 0.025), quantile(ZM_Post, 0.025)),
+  Quant_97.5 = c(quantile(NoZM_Pre, 0.975), quantile(NoZM_Post, 0.975), quantile(ZM_Pre, 0.975), quantile(ZM_Post, 0.975)),
+  ZM = c("Uninvaded", "Uninvaded", "ZM", "ZM"),
+  Quant_83 = c(quantile(NoZM_Pre, 0.83), quantile(NoZM_Post, 0.83), quantile(ZM_Pre, 0.83), quantile(ZM_Post, 0.83)),
+  Quant_17 = c(quantile(NoZM_Pre, 0.17), quantile(NoZM_Post, 0.17), quantile(ZM_Pre, 0.17), quantile(ZM_Post, 0.17)),
+  pre_post = c("Pre", "Post", "Pre", "Post") %>% fct_relevel("Pre", "Post"))
+
+
+BACI_PLOT_DAT_ef <- BACI_Estimates1 %>%
+  mutate(Levels = fct_relevel(Category, "No_ZM_Pre", "No_ZM_Post", "ZM_Pre", "ZM_Post"))
+```
+
+GN data
+```{r}
+NoZM_Pre <- as.numeric(exp(posterior_gn$b_Intercept))
+
+mean(NoZM_Pre)
+quantile(NoZM_Pre, c(0.025, 0.975))
+
+# Control Post
+NoZM_Post <- as.numeric(exp(posterior_gn$b_Intercept + posterior_gn$b_post))
+#NoZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_post"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
+mean(NoZM_Post)
+quantile(NoZM_Post, c(0.025, 0.975))
+
+# ZM Treatment Pre
+ZM_Pre <- as.numeric(exp(posterior_gn$b_Intercept + posterior_gn$b_treatment))
+#ZM_Pre <- exp(posterior[,"b_0"] + posterior[,"b_trt"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
+mean(ZM_Pre)
+quantile(ZM_Pre, c(0.025, 0.975))
+
+# ZM Treatment Post
+ZM_Post <- as.numeric(exp(posterior_gn$b_Intercept + posterior_gn$b_treatment + posterior_gn$b_post + posterior_gn$`b_post:treatment`))
+#ZM_Post <- exp(posterior[,"b_0"] + posterior[,"b_trt"] +posterior[,"b_post_trt"] +  rnorm(length(posterior[, "sigma_lake"]), 0, sd))
+mean(ZM_Post)
+quantile(ZM_Post, c(0.025, 0.975))
+
+## CALULATIONS
+# Sentence 1 - results GN
+ZM_BACI <- exp(posterior_gn$`b_post:treatment`)
+mean(ZM_BACI)
+quantile(ZM_BACI, c(0.025, 0.975))
+(mean(ZM_BACI) - 1) * 100
+(quantile(ZM_BACI, c(0.025, 0.975)) - 1) * 100
+
+# Sentence 2 - Results GN
+# Difference: ZM_Post - ZM_Pre
+ZM_Diff_gn <- ZM_Post - ZM_Pre
+print("Zebra mussel lakes")
+mean(ZM_Diff_gn)
+quantile(ZM_Diff_gn, c(0.025, 0.975))
+# Percent change: ZM Post relative to ZM Pre
+ZM_PctChange_gn <- (ZM_Post - ZM_Pre) / ZM_Pre * 100
+print("Percent change in zebra mussel lakes")
+mean(ZM_PctChange_gn)
+quantile(ZM_PctChange_gn, c(0.025, 0.975))
+
+# Sentence 3 - Results GN
+# Difference: NO ZM_Post - NO ZM_Pre
+NOZM_Diff_gn <- NoZM_Post - NoZM_Pre
+print("Non zebra mussel lakes")
+mean(NOZM_Diff_gn)
+quantile(NOZM_Diff_gn, c(0.025, 0.975))
+# Percent change: NO ZM Post relative to NO ZM Pre
+NOZM_PctChange_gn <- (NoZM_Post - NoZM_Pre) / NoZM_Pre * 100
+print("Percent change in non zebra mussel lakes")
+mean(NOZM_PctChange_gn)
+quantile(NOZM_PctChange_gn, c(0.025, 0.975))
+
+# Sentence 4 - Results GN
+# Difference between ZM and non ZM lakes
+pre_diff <-  ZM_Pre - NoZM_Pre
+print("Pre invasion lakes")
+mean(pre_diff)
+quantile(pre_diff, c(0.025, 0.975))
+# Percent change: non-zm to zm lakes
+pre_PctChange <- (ZM_Pre - NoZM_Pre) / NoZM_Pre * 100
+mean(pre_PctChange)
+quantile(pre_PctChange, c(0.025, 0.975))
+
+BACI_Estimates1 <- tibble(
+  Category = c("No_ZM_Pre", "No_ZM_Post", "ZM_Pre", "ZM_Post"),
+  Mean = c(mean(NoZM_Pre), mean(NoZM_Post), mean(ZM_Pre), mean(ZM_Post)),
+  Quant_2.5 = c(quantile(NoZM_Pre, 0.025), quantile(NoZM_Post, 0.025), quantile(ZM_Pre, 0.025), quantile(ZM_Post, 0.025)),
+  Quant_97.5 = c(quantile(NoZM_Pre, 0.975), quantile(NoZM_Post, 0.975), quantile(ZM_Pre, 0.975), quantile(ZM_Post, 0.975)),
+  ZM = c("Uninvaded", "Uninvaded", "ZM", "ZM"),
+  Quant_83 = c(quantile(NoZM_Pre, 0.83), quantile(NoZM_Post, 0.83), quantile(ZM_Pre, 0.83), quantile(ZM_Post, 0.83)),
+  Quant_17 = c(quantile(NoZM_Pre, 0.17), quantile(NoZM_Post, 0.17), quantile(ZM_Pre, 0.17), quantile(ZM_Post, 0.17)),
+  pre_post = c("Pre", "Post", "Pre", "Post") %>% fct_relevel("Pre", "Post"))
+
+BACI_PLOT_DAT_gn <- BACI_Estimates1 %>%
+  mutate(Levels = fct_relevel(Category, "No_ZM_Pre", "No_ZM_Post", "ZM_Pre", "ZM_Post"))
+```
+
+Plot figure
+```{r, warning = FALSE}
+# Figure A
+BACI_Figure_ef <- BACI_PLOT_DAT_ef %>% 
+  ggplot(aes(x = pre_post, y = Mean, ymin = Quant_2.5, ymax = Quant_97.5)) +
+  geom_pointrange(aes(color = ZM, shape = ZM), size = 1.5, position = position_dodge(0.25))+
+  geom_linerange(aes(x = pre_post, ymin = Quant_17, ymax = Quant_83, color = ZM), 
+                 position = position_dodge(0.25), size = 3) +
+  geom_line(aes(x = pre_post, y = Mean, color = ZM, group = ZM), 
+            position = position_dodge(0.25), linetype = "dotted", size = 1.5) + 
+  labs(y = "Age-0 Walleye CPUE")+
+  theme_bw() +
+  scale_color_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM"),
+                     values = c("#00BFC4", "#F8766D")) + 
+  scale_shape_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM"), values = c(16, 15))+
+  theme(axis.text.x = element_text(color = "black", size = 14),
+        axis.title.y = element_text(color = "black", size = 14),
+        axis.title.x = element_blank()) +
+  theme(legend.position = c(.8, .875), legend.box.background = element_rect(color = "gray85"),
+        legend.box.margin = margin(t = 2, r = 4, b = 2, l = 4),
+        legend.key = element_rect(color = "gray90"),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.key.size = unit(.6, "cm"))
+BACI_Figure_ef
+
+# Figure B
+# Summarize posteriors
+plot_dat <- tibble(category = c("Uninvaded", "ZM Invaded"),
+                   Mean = c(mean(NOZM_PctChange_ef), mean(ZM_PctChange_ef)),
+                   Q2.5 = c(quantile(NOZM_PctChange_ef, 0.025), quantile(ZM_PctChange_ef, 0.025)),
+                   Q97.5 = c(quantile(NOZM_PctChange_ef, 0.975), quantile(ZM_PctChange_ef, 0.975)),
+                   Q17 = c(quantile(NOZM_PctChange_ef, 0.17),  quantile(ZM_PctChange_ef, 0.17)),
+                   Q83 = c(quantile(NOZM_PctChange_ef, 0.83),  quantile(ZM_PctChange_ef, 0.83)))
+
+# Plot
+ef_percent_change <- plot_dat %>% 
+  mutate(category = fct_relevel(category, "ZM Invaded", "Uninvaded")) %>%
+  ggplot(aes(x = Mean, y = category, color = category, shape = category)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_linerange(aes(xmin = Q2.5, xmax = Q97.5), linewidth = 1) +    
+  geom_linerange(aes(xmin = Q17, xmax = Q83), linewidth = 3) +  
+  geom_point(size = 4.5) + 
+  scale_color_manual(name = "ZM Invasion Status", labels = c("ZM Invaded", "Uninvaded"),
+                   values = c("#F8766D", "#00BFC4")) + 
+  scale_shape_manual(name = "ZM Invasion Status", labels = c("ZM Invaded", "Uninvaded"), 
+                   values = c(15, 16)) + 
+  labs(x = "% Change From Pre - Post Time Periods (Age-0)", y = NULL) +
+  theme_bw() +
+  theme(axis.text = element_text(size = 14, color = "black"),
+        axis.title.x = element_text(size = 14, color = "black"),
+        legend.position = "none",
+        plot.margin  = margin(r = 30, b = 5, l = 5))
+
+# Figure C
+BACI_Figure_gn <- BACI_PLOT_DAT_gn %>% 
+  ggplot(aes(x = pre_post, y = Mean, ymin = Quant_2.5, ymax = Quant_97.5)) +
+  geom_pointrange(aes(color = ZM, shape = ZM), size = 1.5, position = position_dodge(0.25))+
+  geom_linerange(aes(x = pre_post, ymin = Quant_17, ymax = Quant_83, color = ZM), 
+                 position = position_dodge(0.25), size = 3)+
+  geom_line(aes(x = pre_post, y = Mean, color = ZM, group = ZM), 
+            position = position_dodge(0.25), linetype = "dotted", size = 1.5) + 
+  labs(y = "Age-3 Walleye CPUE")+
+  theme_bw() +
+  scale_color_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM"),
+                     values = c("#00BFC4", "#F8766D")) + 
+  scale_shape_manual(name = "ZM Invasion Status", labels = c("Uninvaded", "ZM"), values = c(16, 15))+
+  theme(axis.text.x = element_text(color = "black", size = 14),
+        axis.title.y = element_text(color = "black", size = 14),
+        axis.title.x = element_blank(), 
+        legend.position = "none")
+BACI_Figure_gn
+
+# Figure D
+plot_dat_gn <- tibble(category = c("Uninvaded", "ZM Invaded"),
+                   Mean = c(mean(NOZM_PctChange_gn), mean(ZM_PctChange_gn)),
+                   Q2.5 = c(quantile(NOZM_PctChange_gn, 0.025), quantile(ZM_PctChange_gn, 0.025)),
+                   Q97.5 = c(quantile(NOZM_PctChange_gn, 0.975), quantile(ZM_PctChange_gn, 0.975)),
+                   Q17 = c(quantile(NOZM_PctChange_gn, 0.17),  quantile(ZM_PctChange_gn, 0.17)),
+                   Q83 = c(quantile(NOZM_PctChange_gn, 0.83),  quantile(ZM_PctChange_gn, 0.83)))
+
+# Plot
+gn_percent_change <- plot_dat_gn %>% 
+  mutate(category = fct_relevel(category, "ZM Invaded", "Uninvaded")) %>%
+  ggplot(aes(x = Mean, y = category, color = category, shape = category)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_linerange(aes(xmin = Q2.5, xmax = Q97.5), linewidth = 1) +   
+  geom_linerange(aes(xmin = Q17,  xmax = Q83), linewidth = 3) +    
+  geom_point(size = 4.5) + 
+  scale_color_manual(name = "ZM Invasion Status", labels = c("ZM Invaded", "Uninvaded"),
+                   values = c("#F8766D", "#00BFC4")) + 
+  scale_shape_manual(name = "ZM Invasion Status", labels = c("ZM Invaded", "Uninvaded"), 
+                   values = c(15, 16)) + 
+  labs(x = "% Change From Pre - Post Time Periods (Age-3)", y = NULL) +
+  theme_bw() +
+  theme(axis.text = element_text(size = 14, color = "black"),
+        axis.title.x = element_text(size = 14, color = "black"),
+        legend.position = "none",
+        plot.margin  = margin(r = 30, b = 5, l = 5))
+
+        
+plot_grid(BACI_Figure_ef, ef_percent_change, BACI_Figure_gn, gn_percent_change,
+          labels = c("A", "B", "C", "D"), ncol = 2)
+
+ggsave("./figures/Figure_2.jpeg", height = 10, width = 10)
+```
+
+
+# Stocking effect (numbers)
+```{r}
+no_stocking_ef <- as.numeric(exp(posterior_ef$b_Intercept))
+stocking_ef <- as.numeric(exp(posterior_ef$b_Intercept + posterior_ef$b_STOCKED))
+
+# effects of covariates results numbers - EF
+stock_ef <- exp(posterior_ef$`b_STOCKED`)
+mean(stock_ef)
+quantile(stock_ef, c(0.025, 0.975))
+(mean(stock_ef) - 1) * 100
+(quantile(stock_ef, c(0.025, 0.975)) - 1) * 100
+
+
+# effects of covariates results numbers - GN
+no_stocking_gn <- as.numeric(exp(posterior_gn$b_Intercept))
+fry_stocking_gn <- as.numeric(exp(posterior_gn$b_Intercept + posterior_gn$b_fry))
+
+fry_gn <- exp(posterior_gn$`b_fry`)
+mean(fry_gn)
+quantile(fry_gn, c(0.025, 0.975))
+(mean(fry_gn) - 1) * 100
+(quantile(fry_gn, c(0.025, 0.975)) - 1) * 100
+
+
+fgl_stocking_gn <- as.numeric(exp(posterior_gn$b_Intercept + posterior_gn$b_fgl))
+
+fgl_gn <- exp(posterior_gn$`b_fingerling`)
+mean(fgl_gn)
+quantile(fgl_gn, c(0.025, 0.975))
+(mean(fgl_gn) - 1) * 100
+(quantile(fgl_gn, c(0.025, 0.975)) - 1) * 100
+```
+
+
+# Figure 3 (Posterior Distributions)
+
+```{r}
+color_scheme_set(scheme = "blue")
+
+post_dist_ef <- mcmc_areas(
+    posterior_ef,
+    pars = c("b_treatment", "b_post","b_STOCKED","b_post:treatment","b_lake_area_s","b_median_gdd_5_s","b_anomaly_gdd_5_s"),
+    prob = 0.95, # 95% intervals
+    prob_outer = 0.99, # 99%
+    point_est = "median",
+    area_method = "scaled height"
+  ) + 
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") + 
+  scale_y_discrete(limit = c("b_treatment", "b_post","b_post:treatment","b_lake_area_s", "b_STOCKED",
+                             "b_median_gdd_5_s","b_anomaly_gdd_5_s"),
+                       labels = c("Zebra Mussels", "Post Invasion", "ZM * Post", "Lake Area",
+                                  "Stocked", "GDD Anomaly\n(age 0)", "Lake median GDD"))+
+  theme_classic() +
+  theme(axis.text.x = element_text(color = "black"),
+        axis.text.y = element_text(color = "black", size = 14) )
+
+post_dist_gn <- mcmc_areas(
+    posterior_gn,
+    pars = c("b_treatment", "b_post", "b_post:treatment","b_lake_area_s", "b_fry1", "b_fingerling1", 
+             "b_anomaly_gdd_5_s", "b_median_gdd_5_s"),
+    prob = 0.95, # 95% intervals
+    prob_outer = 0.99, # 99%
+    point_est = "median",
+    area_method = "scaled height"
+  ) + 
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") + 
+  scale_y_discrete(limit = c("b_treatment", "b_post", "b_post:treatment","b_lake_area_s", "b_fry1", "b_fingerling1", 
+                             "b_anomaly_gdd_5_s", "b_median_gdd_5_s"),
+                   labels = c("Zebra Mussels", "Post Invasion", "ZM * Post", "Lake Area", 
+                              "Stocked (Fry)", "Stocked (Fingerlings)", 
+                              "GDD Anomaly\n(age 0 - 2)", "Lake Median GDD")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(color = "black"),
+        axis.text.y = element_text(color = "black", size = 14))
+
+plot_grid(post_dist_ef, post_dist_gn, labels = c("A", "B"))
+
+
+ggsave("./figures/Figure_3.jpeg", height = 10, width = 12, dpi = 600)
+```
+
+
+# Figure 4
+
+Stocking Figure
+```{r, warning = FALSE}
+# get stocking estimates
+
+not_stocked <- exp(posterior_ef$b_Intercept) 
+
+stocked <- exp(posterior_ef$b_Intercept + posterior_ef$b_STOCKED)
+
+
+stocking_estimates <- tibble(
+  Stocking_Status = c("Not Stocked", "Stocked"),
+  Mean = c(mean(not_stocked), mean(stocked)),
+  Quant_2.5 = c(quantile(not_stocked, 0.025), quantile(stocked, 0.025)),
+  Quant_97.5 = c(quantile(not_stocked, 0.975), quantile(stocked, 0.975)),
+  Quant_83 = c(quantile(not_stocked, 0.83), quantile(stocked, 0.83)),
+  Quant_17 = c(quantile(not_stocked, 0.17), quantile(stocked, 0.17)))
+
+
+stocking_estimates_DAT <- stocking_estimates %>%
+  mutate(Levels = fct_relevel(Stocking_Status, "Not Stocked", "Stocked"))
+
+
+
+stocking_figure_ef <- ggplot(stocking_estimates_DAT , aes(x = Stocking_Status, y = Mean, ymin = Quant_2.5, ymax = Quant_97.5))+
+  #geom_segment(aes(x = "Not Stocked", y = 4.189089, xend = "Stocked", yend = 11.138306), color = "grey85", linetype = "dashed")+
+  geom_pointrange(aes(color = Stocking_Status),size = 1.5)+
+  geom_linerange(aes(x = Levels, ymin = Quant_17, ymax = Quant_83, color = Stocking_Status), size = 4)+
+  scale_discrete_manual(aesthetics = c("color", "fill"), values = c("#4DAF4A", "#984EA3"))+
+  labs(y = "Age-0 Walleye CPUE")+
+  theme_bw()+
+  theme(legend.position = "none")+
+  theme(axis.text.x = element_text(color = "black", size = 14),
+        axis.title.y = element_text(color = "black", size = 14),
+        axis.title.x = element_blank())
+
+# Get stocking estimates (gillnet)
+not_stocked <- exp(posterior_gn$b_Intercept) 
+stocked_fry <- exp(posterior_gn$b_Intercept + posterior_gn$b_fry1) 
+stocked_fgl <- exp(posterior_gn$b_Intercept + posterior_gn$b_fingerling1)
+
+
+stocking_estimates <- tibble(stocking_estimates <- tibble(stocking_estimates <- tibble(
+  Stocking_Status = c("Not Stocked", "Fry Stocked", "Fingerling Stocked"),
+  Mean = c(mean(not_stocked), mean(stocked_fry), mean(stocked_fgl)),
+  Quant_2.5 = c(quantile(not_stocked, 0.025), quantile(stocked_fry, 0.025), quantile(stocked_fgl, 0.025)),
+  Quant_97.5 = c(quantile(not_stocked, 0.975), quantile(stocked_fry, 0.975), quantile(stocked_fgl, 0.975)),
+  Quant_83 = c(quantile(not_stocked, 0.83), quantile(stocked_fry, 0.83), quantile(stocked_fgl, 0.83)),
+  Quant_17 = c(quantile(not_stocked, 0.17), quantile(stocked_fry, 0.17), quantile(stocked_fgl, 0.17)))))
+
+
+stocking_estimates_gn <- stocking_estimates %>%
+  mutate(Levels = fct_relevel(Stocking_Status, "Not Stocked", "Fry Stocked", "Fingerling Stocked"))
+
+
+stocking_figure_gn <-ggplot(stocking_estimates_gn , aes(x = Stocking_Status, y = Mean, ymin = Quant_2.5, ymax = Quant_97.5))+
+  geom_pointrange(aes(color = Stocking_Status), size = 1.5)+
+  geom_linerange(aes(x = Levels, ymin = Quant_17, ymax = Quant_83, color = Stocking_Status), size = 4)+
+  scale_discrete_manual(aesthetics = c("color", "fill"), values = c("#377EB8", "#984EA3", "#4DAF4A"))+
+  labs(y = "Age-3 Walleye CPUE")+
+  theme_bw() +
+  theme(legend.position = "none")+
+  theme(axis.text.x = element_text(color = "black", size = 14),
+        axis.title.y = element_text(color = "black", size = 14),
+        axis.title.x = element_blank())
+        
+
+plot_grid(stocking_figure_ef, stocking_figure_gn, labels = c("A", "B"), rel_widths = c(.45, .55))
+ggsave("./figures/Figure_4.jpeg", height = 8, width = 10)
+```
+
+
+# Figure 5
+
+Environmental effects
+GDD Anomaly (EF)
+```{r}
+# Begin predict code for first year GDD
+
+b_gdd_sum <- posterior_ef$b_anomaly_gdd_5_s
+b_0 <- posterior_ef$b_Intercept
+
+sum <- EF_Final$anomaly_gdd_5 
+
+lower_gdd = min(sum)
+upper_gdd = max(sum)
+gdd_range <- seq(lower_gdd, upper_gdd, by= 5) 
+
+gdd_range_standardized <- wiqid::standardize2match(gdd_range, sum)
+
+# Output storage DF
+gdd.plot.anomaly <- data.frame(gdd = gdd_range, 
+                        gdd_s = gdd_range_standardized, 
+                        mean = numeric(length(gdd_range)), 
+                        low = numeric(length(gdd_range)), high = numeric(length(gdd_range)))
+
+for (i in 1:nrow(gdd.plot.anomaly)){
+  pred.gdd = exp(b_0 + (b_gdd_sum * gdd.plot.anomaly[i, 2]))
+  gdd.plot.anomaly[i, 3] = mean(pred.gdd)
+  gdd.plot.anomaly[i, 4:5] = quantile(pred.gdd, c(.025, .975))
+}
+
+# Plot
+gdd_plot_sum_ef <- gdd.plot.anomaly %>% 
+  ggplot(aes(x = gdd)) +
+  geom_line(aes(x= gdd, y = mean), size = 2)+
+  geom_ribbon(aes(ymin = low, ymax = high), alpha= .2) +
+  labs(x = "GDD Anomaly from Age-0 (base 5°C)", y = "Predicted Electrofishing CPUE")+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 5)) +
+  theme_classic()
+
+gdd_plot_sum_ef
+```
+
+GDD anomaly (GN)
+```{r}
+b_gdd_sum <- posterior_gn$b_anomaly_gdd_5_s
+b_0 <- posterior_gn$b_Intercept
+
+sum <- GN_Final$anomaly_gdd_5 
+
+lower_gdd = min(sum)
+upper_gdd = max(sum)
+gdd_range <- seq(lower_gdd, upper_gdd, by= 5) 
+
+gdd_range_standardized <- wiqid::standardize2match(gdd_range, sum)
+
+# Output storage DF
+gdd.plot.anomaly <- data.frame(gdd = gdd_range, 
+                        gdd_s = gdd_range_standardized, 
+                        mean = numeric(length(gdd_range)), 
+                        low = numeric(length(gdd_range)), high = numeric(length(gdd_range)))
+
+for (i in 1:nrow(gdd.plot.anomaly)){
+  pred.gdd = exp(b_0 + (b_gdd_sum * gdd.plot.anomaly[i, 2]))
+  gdd.plot.anomaly[i, 3] = mean(pred.gdd)
+  gdd.plot.anomaly[i, 4:5] = quantile(pred.gdd, c(.025, .975))
+}
+
+# Plot
+gdd_plot_sum_gn <- gdd.plot.anomaly %>% 
+  ggplot(aes(x = gdd)) +
+  geom_line(aes(x= gdd, y = mean), size = 2)+
+  geom_ribbon(aes(ymin = low, ymax = high), alpha= .2) +
+  labs(x = "GDD Anomaly from Age-0 (base 5°C)", y = "Predicted Gillnet CPUE")+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 5)) +
+  theme_classic()
+
+
+gdd_plot_sum_gn
+
+```
+
+Lake area (EF)
+```{r}
+b_area <- posterior_ef$b_lake_area
+b_0 <- posterior_ef$b_Intercept
+
+# Lake area range
+lower_area = min(EF_Final$log_acres)
+upper_area = max(EF_Final$log_acres)
+log_lake_area_range <- seq(lower_area, upper_area, by= 0.1) #935 numbers
+
+log_lake_area_range_standardized <- wiqid::standardize2match(log_lake_area_range, EF_Final$log_acres)
+
+area.plot <- data.frame(area = log_lake_area_range, 
+                        area_s = log_lake_area_range_standardized, 
+                        mean = numeric(length(log_lake_area_range)), 
+                        low = numeric(length(log_lake_area_range)), high = numeric(length(log_lake_area_range)))
+
+for (i in 1:nrow(area.plot)){
+  pred.area = exp(b_0 + (b_area *area.plot[i, 2]))
+  area.plot[i, 3] = mean(pred.area)
+  area.plot[i, 4:5] = quantile(pred.area, c(.025, .975))
+}
+
+area_plot_ef <- area.plot %>% 
+  ggplot(aes(x = area))+
+  geom_line(aes(x=area, y = mean), size = 2)+
+  geom_ribbon(aes(ymin = low, ymax = high), alpha= .2)+
+  labs(x = "log Lake Area (acres)", y = "Predicted Electrofishing CPUE")+
+  theme_classic()
+
+area_plot_ef
+```
+
+Lake area (GN)
+```{r}
+# Begin predict code
+
+b_area <- posterior_gn$b_lake_area
+b_0 <- posterior_gn$b_Intercept
+
+# Lake area range
+lower_area = min(GN_Final$log_acres)
+upper_area = max(GN_Final$log_acres)
+log_lake_area_range <- seq(lower_area, upper_area, by= 0.1) #935 numbers
+
+log_lake_area_range_standardized <- wiqid::standardize2match(log_lake_area_range, GN_Final$log_acres)
+
+area.plot <- data.frame(area = log_lake_area_range, 
+                        area_s = log_lake_area_range_standardized, 
+                        mean = numeric(length(log_lake_area_range)), 
+                        low = numeric(length(log_lake_area_range)), high = numeric(length(log_lake_area_range)))
+
+for (i in 1:nrow(area.plot)){
+  pred.area = exp(b_0 + (b_area *area.plot[i, 2]))
+  area.plot[i, 3] = mean(pred.area)
+  area.plot[i, 4:5] = quantile(pred.area, c(.025, .975))
+}
+
+area_plot_gn <- area.plot %>% 
+  ggplot(aes(x = area))+
+  geom_line(aes(x=area, y = mean), size = 2)+
+  geom_ribbon(aes(ymin = low, ymax = high), alpha= .2)+
+  labs(x = "log Lake Area (acres)", y = "Predicted Gillnet CPUE")+
+  theme_classic()
+
+area_plot_gn
+```
+
+Median GDD, lake level (EF)
+```{r}
+# Begin predict code
+b_gdd_LL <- posterior_ef$b_median_gdd_5_s
+b_0 <- posterior_ef$b_Intercept
+
+# Range of observed lake level GDD's (base 5)
+lower_gdd = min(EF_Final$median_gdd_5)
+upper_gdd = max(EF_Final$median_gdd_5)
+
+
+gdd_LL_range <- seq(lower_gdd, upper_gdd, by= 5)
+# Standardized the range
+gdd_LL_range_standardized <- wiqid::standardize2match(gdd_LL_range, EF_Final$median_gdd_5)
+
+# Output storage DF
+gdd.plot <- data.frame(gdd = gdd_LL_range, 
+                        gdd_s = gdd_LL_range_standardized, 
+                        mean = numeric(length(gdd_LL_range)), 
+                        low = numeric(length(gdd_LL_range)), high = numeric(length(gdd_LL_range)))
+
+for (i in 1:nrow(gdd.plot)){
+  pred.gdd = exp(b_0 + (b_gdd_LL * gdd.plot[i, 2]))
+  gdd.plot[i, 3] = mean(pred.gdd)
+  gdd.plot[i, 4:5] = quantile(pred.gdd, c(.025, .975))
+}
+
+# Plot
+gdd_LL_plot_ef <- gdd.plot %>% 
+  ggplot(aes(x = gdd))+
+  geom_line(aes(x= gdd, y = mean), size = 2)+
+  geom_ribbon(aes(ymin = low, ymax = high), alpha= .2)+
+  labs(x = "Median Growing Degree Days", y = "Predicted Electrofishing CPUE")+
+  theme_classic()
+gdd_LL_plot_ef
+```
+
+Median GDD, lake level (GN)
+```{r}
+# Begin predict code
+b_gdd_LL <- posterior_gn$b_median_gdd_5_s
+b_0 <- posterior_gn$b_Intercept
+
+# Range of observed lake level GDD's (base 5)
+lower_gdd = min(GN_Final$median_gdd_5)
+upper_gdd = max(GN_Final$median_gdd_5)
+
+
+gdd_LL_range <- seq(lower_gdd, upper_gdd, by= 5)
+# Standardized the range
+gdd_LL_range_standardized <- wiqid::standardize2match(gdd_LL_range, GN_Final$median_gdd_5)
+
+# Output storage DF
+gdd.plot <- data.frame(gdd = gdd_LL_range, 
+                        gdd_s = gdd_LL_range_standardized, 
+                        mean = numeric(length(gdd_LL_range)), 
+                        low = numeric(length(gdd_LL_range)), high = numeric(length(gdd_LL_range)))
+
+for (i in 1:nrow(gdd.plot)){
+  pred.gdd = exp(b_0 + (b_gdd_LL * gdd.plot[i, 2]))
+  gdd.plot[i, 3] = mean(pred.gdd)
+  gdd.plot[i, 4:5] = quantile(pred.gdd, c(.025, .975))
+}
+
+# Plot
+gdd_LL_plot_gn <- gdd.plot %>% 
+  ggplot(aes(x = gdd))+
+  geom_line(aes(x= gdd, y = mean), size = 2)+
+  geom_ribbon(aes(ymin = low, ymax = high), alpha= .2)+
+  labs(x = "Median Growing Degree Days", y = "Predicted Gillnet CPUE")+
+  theme_classic()
+gdd_LL_plot_gn
+```
+
+
+# Combine all environmental figures
+```{r}
+Fig_5 <- plot_grid( gdd_LL_plot_ef, gdd_LL_plot_gn, gdd_plot_sum_ef, gdd_plot_sum_gn, area_plot_ef, area_plot_gn,
+          labels = c("A", "B", "C", "D", "E", "F"), ncol = 2,
+          label_size = 14)
+Fig_5
+ggsave("./figures/Figure_5.jpeg", height = 12, width = 10)
+```
+

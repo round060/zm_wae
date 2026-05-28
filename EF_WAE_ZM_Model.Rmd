@@ -1,0 +1,364 @@
+---
+title: "EF_WAE_ZM_Model1"
+author: "Holly Kundel"
+date: "11/15/2021"
+output: html_document
+---
+
+This model is run using `ZM_LAKE` as zebra mussel invasion variable
+- Only considered invaded if at least one EF survey was done the year of invasion or later
+- No invasions after 2019 count (because no data post 2019)
+- "0" indicates a lake is uninvaded (based on above criteria)
+- "1" indicates a lake is invaded (based on above criteria)
+
+Load in Required Packages
+```{r}
+#remove.packages(c("StanHeaders", "rstan", "brms"))
+#install.packages("rstan", repos = "https://cloud.r-project.org/", dependencies = TRUE)
+#install.packages("brms", repos = "https://cloud.r-project.org/", dependencies = TRUE)
+library("rstan") # observe startup messages
+library(brms)
+library(sf)
+library(RANN)
+library(lme4)
+library(tidyverse)
+library(mnsentinellakes)
+options(scipen = 999)
+```
+
+Load in Data
+```{r, message=FALSE}
+dat <- read_csv("./cleaned_data/yoy_catch_data.csv") %>% 
+  mutate(survey_id = row_number(), 
+         STOCKED = ifelse(FRY > 0,1,0))
+
+nrow(dat[dat$catch==0,])/nrow(dat)
+
+
+```
+# Nearest Neighbor Code
+
+- Assigning uninvaded lakes a "pseudo-invasion year" for BACI set up
+
+Data setup
+```{r, eval = F}
+# Format dates
+dat <- EF_WAE_ZM_data %>% 
+  mutate(SAMPLING_START_DATE = mdy(SAMPLING_START_DATE),
+         day = day(SAMPLING_START_DATE),
+         month = month(SAMPLING_START_DATE),
+         year = year(SAMPLING_START_DATE),
+  )
+```
+
+Create Spatial sf Object
+```{r}
+# Create spatial sf object (4326 = WGS84)
+dat.geo <- st_as_sf(dat, coords = c("x", "y"), crs = 4326)
+```
+
+Separate Invaded Lakes and Uninvaded Lakes
+
+- Using column `ZM_LAKE` for this
+- Only considered invaded if at least one EF survey was done the year of invasion or later
+- No invasions after 2019 count (because no data post 2019)
+- "0" indicates a lake is uninvaded (based on above criteria)
+- "1" indicates a lake is invaded (based on above criteria)
+
+```{r}
+dat.geo.uninvaded <- dat.geo %>% 
+  filter(year_confirmed == 0)
+dim(dat.geo.uninvaded) #1116 surveys
+
+dat.geo.invaded <- dat.geo %>% 
+  filter(year_confirmed > 0)
+dim(dat.geo.invaded) #322 surveys, adds up to correct total of 1438 surveys total
+```
+
+Get coordinate matrices
+```{r}
+uninvaded_coords <- do.call(rbind, st_geometry(dat.geo.uninvaded))
+invaded_coords <- do.call(rbind, st_geometry(dat.geo.invaded))
+invaded_coords <- cbind(invaded_coords, 1:nrow(invaded_coords)) # Index for identifying nearest lake
+
+```
+
+Find nearest neighbor
+```{r}
+closest <- nn2(invaded_coords[,1:2], uninvaded_coords,  k = 1, searchtype = "standard")
+#str(closest)
+#head(closest)
+closest <- sapply(closest, cbind) 
+```
+
+Combine uninvaded data with nearest neighbor assignments
+```{r}
+dat.geo.uninvaded <- cbind(dat.geo.uninvaded, closest)
+```
+
+Give invaded lakes an identifier and select columns
+```{r}
+dat.geo.invaded$nn.idx <- 1:nrow(dat.geo.invaded)
+dat.geo.invaded <- dat.geo.invaded %>% 
+  dplyr::select(year_confirmed, nn.idx)
+str(dat.geo.invaded)
+head(dat.geo.invaded)
+
+#str(dat.geo.uninvaded)
+#str(dat.geo.invaded)
+```
+
+Merge uninvaded with invaded `YEAR_INFESTED` for use as "after" year in BACI (Before After Control Impact)
+```{r}
+dat.geo.invaded_merge <- st_set_geometry(dat.geo.invaded, NULL)
+
+dat.geo.uninvaded.final <- dat.geo.uninvaded %>%
+    left_join(dat.geo.invaded_merge, by = c("nn.idx"))
+#str(dat.geo.uninvaded.final)
+#summary(dat.geo.uninvaded.final)
+# Bring back into full dataset
+# Convert to dataframe
+dat.geo.uninvaded.final.df <- st_set_geometry(dat.geo.uninvaded.final, NULL)
+#class(dat.geo.uninvaded.final.df)
+#str(dat.geo.uninvaded.final.df)
+
+# Join dat.geo.uninvaded.final.df - want YEAR_INFESTED.y - with original data, dat
+# Grab columns of interest
+dat.geo.uninvaded.final.df <- dat.geo.uninvaded.final.df %>% 
+  dplyr::select(survey_id, year_confirmed.y)
+#dim(dat.geo.uninvaded.final.df)
+#head(dat.geo.uninvaded.final.df)
+#dim(dat)
+
+# Final merge
+final.dat3 <- dat %>%
+    left_join(dat.geo.uninvaded.final.df, by = c("survey_id"))
+#dim(final.dat3)
+#head(final.dat3)
+```
+
+# Prepare to run model
+
+Create BACI design variables
+```{r}
+# "Treatment" is lake-level invasion status, ZM (1 = ZM; 0 otherwise)
+# Before/After time variable ("post" = 1 if sampled after invasion; 0 if before)
+# Below, "year" is year of sampling and time is year infested
+dat <- final.dat3 %>% 
+  mutate(ZM_LAKE = ifelse(year_confirmed == 0, 0, 1),
+         offsets = log(total_effort_1),
+         time = ifelse(year_confirmed == 0, year_confirmed.y, year_confirmed),
+         post = ifelse(year > time, 1, 0),
+         treatment = ZM_LAKE # USING ZM_LAKE_HERE
+         )%>%
+  mutate(INVASION_STATUS_NEW = case_when(ZM_LAKE == 0 ~ "Uninvaded",
+                                         ZM_LAKE == 1 & post == 0 ~ "PRE_ZM",
+                                         ZM_LAKE == 1 & post == 1 ~ "POST_ZM"))
+
+#head(dat)
+#summary(dat)
+
+#check data
+dat %>%
+  group_by(ZM_LAKE) %>%  
+  count(post, ZM_LAKE) %>%
+  ungroup() %>% 
+  mutate(prop = prop.table(n))
+
+###new addition of data filtering#######
+#ensure at least one year pre and post
+test = dat %>% 
+  group_by(lake_id, post, ZM_LAKE) %>% 
+  summarise(count=n()) %>% 
+  filter(count > 0) %>% ungroup() %>% 
+  group_by(lake_id, ZM_LAKE) %>% 
+  summarise(pre.post.test = n()) %>% 
+  filter(pre.post.test==2)
+
+
+dat <- dat %>% filter(lake_id %in% test$lake_id)
+```
+
+# Number of lakes stocked
+```{r}
+invasions <- dat %>% select(lake_id, year_confirmed)
+
+stocking <- read.csv("./data/mn_wae_stocking.csv") %>% 
+  rename(lake_id = DOW, year = Year) %>%
+  mutate(lake_id = ifelse(lake_id == "04003500", "04003501", lake_id),
+         lake_id = fixlakeid(lake_id)) %>%
+  select(lake_id, year, FRY, fry.pa) %>% 
+  filter(lake_id %in% dat$lake_id) %>% 
+  merge(invasions, by = "lake_id") %>%
+  mutate(invaded = ifelse(year_confirmed > year, 1, 0))
+  
+```
+
+
+Quick test with glmer
+```{r, eval = F}
+m0 <-glmer(catch~ 1 + (1 | lake.id), data = dat, family = poisson(link = "log"), nAGQ = 100)
+summary(m0)
+# # 
+m1 <- glmer(catch ~ post + treatment + post*treatment + STOCKED + (1|lake.id), 
+               family = poisson(link = "log") nAGQ = 100, data=dat)
+summary(m1)
+performance::check_zeroinflation(m1)
+
+```
+
+# Models
+```{r}
+to_keep <- c("anomaly_gdd_5_s","anomaly_gdd_5", "STOCKED", "median_gdd_5_s", "median_gdd_5", "lake_area_s", "log_acres")
+
+dat_standardized <- dat %>% 
+  mutate(anomaly_gdd_5_s = as.numeric(scale(anomaly_gdd_5)),
+         lake_area_s = as.numeric(scale(log_acres)),
+         median_gdd_5_s = as.numeric(scale(median_gdd_5)),
+         #lake_id = as.factor(lake_id),
+         year = as.factor(year)) %>%
+  dplyr::select(lake_id, year, catch, offsets, total_effort_1, post, treatment, x, y, matches(to_keep))
+
+write.csv(dat_standardized, "./cleaned_data/ef_for_model.csv", row.names = F)
+dat_standardized <- read.csv("./cleaned_data/ef_for_model.csv")
+
+temp <- dat_standardized %>% group_by(lake_id) %>% count()
+median(temp$n)
+
+length(unique(temp$lake_id))
+min(dat_standardized$year); max(dat_standardized$year)
+```
+
+
+```{r}
+priors = c(prior(normal(0, 5), class = "Intercept"),
+           prior(normal(0, 5), class = "b"))
+
+# Zero inflated poisson with covariates
+zip_ef_model <- 
+  brm(catch ~ offset(offsets) + 
+      post + treatment + post:treatment + STOCKED + anomaly_gdd_5_s + median_gdd_5_s + 
+      lake_area_s +
+      (1 | year) +              
+      (1 | lake_id),
+    family = zero_inflated_poisson(), data = dat_standardized, prior = priors,
+    control = list(max_treedepth = 25),
+    chains = 4, iter = 10000, warmup = 2500, thin = 2, seed = 1024, save_pars=save_pars(all=TRUE),
+    file = "./models/zip_ef_model_brms.rds")
+#summary(zip_ef_model)
+#plot(zip_ef_model)
+
+# Zero inflated poisson NO covariates
+zip_ef_model_nocovs <- 
+  brm(catch ~ offset(offsets) + 
+      post + treatment + post:treatment +
+      (1 | year) +              
+      (1 | lake_id), 
+    family = zero_inflated_poisson(), data = dat_standardized, prior = priors,
+    control = list(max_treedepth = 25),
+    chains = 4, iter = 10000, warmup = 2500, thin = 2, seed = 1024, save_pars=save_pars(all=TRUE),
+    file = "./models/zip_ef_model_nocovs_brms.rds")
+#summary(zip_ef_model_nocovs)
+
+# Negative Binomial with covariates
+nb_ef_model <- 
+  brm(catch ~ offset(offsets) + 
+      post + treatment + post:treatment + STOCKED + anomaly_gdd_5_s + median_gdd_5_s + 
+      lake_area_s + 
+      (1 | year) +              
+      (1 | lake_id), 
+    family = negbinomial(), data = dat_standardized, prior = priors,
+    control = list(max_treedepth = 25),
+    chains = 4, iter = 10000, warmup = 2500, thin = 2, seed = 1024, save_pars=save_pars(all=TRUE),
+    file = "./models/nb_ef_model_brms.rds")
+#plot(nb_ef_model)
+#summary(nb_ef_model)
+
+
+# Negative Binomial NO covariates
+nb_ef_model_nocovs <- 
+  brm(catch ~ offset(offsets) + 
+      post + treatment + post:treatment +
+      (1 | year) +              
+      (1 | lake_id), 
+    family = negbinomial(), data = dat_standardized, prior = priors,
+    control = list(max_treedepth = 25),
+    chains = 4, iter = 10000, warmup = 2500, thin = 2, seed = 1024, save_pars=save_pars(all=TRUE), 
+    file = "./models/nb_ef_model_nocovs_brms.rds")
+#summary(nb_ef_model_nocovs)
+
+# Zero inflated Negative Binomial with covariates
+zipnb_ef_model <- 
+  brm(catch ~ offset(offsets) + 
+      post + treatment + post:treatment + STOCKED + anomaly_gdd_5_s + median_gdd_5_s + 
+      lake_area_s +
+      (1 | year) +              
+      (1 | lake_id), 
+    family = zero_inflated_negbinomial(), data = dat_standardized, prior = priors,
+    control = list(max_treedepth = 25),
+    chains = 4, iter = 10000, warmup = 2500, thin = 2, seed = 1024, save_pars=save_pars(all=TRUE),
+    file = "./models/zipnb_ef_model_brms.rds")
+#plot(zipnb_ef_model)
+#summary(zipnb_ef_model)
+```
+
+
+loo - fits model with all data minus one then calculates the probability of that observation (0-1; Predictive density). It then turns that into a log-density (log predictive density). It then does this for every observation and sums the log predictive density (expected log predictive density; elpd_loo). Higher elpd_loo is BETTER (since elpd_loo is negative, closer to zero is better) Log predictive density is the calculation if you never leave out data (lpd). p_loo is lpd - elpd_loo and should always be less than zero ( I think?)
+
+# Model selection, and other fun tidbits
+```{r}
+output_nb <- loo(nb_ef_model, moment_match = TRUE)
+output_nb_nocovs <- loo(nb_ef_model_nocovs, moment_match = TRUE)
+output_zipnb <- loo(zipnb_ef_model, moment_match = TRUE)
+
+# These take quite a bit to run and dont work (high pareto K value)
+output_zip <- loo(zip_ef_model, moment_match = TRUE)
+output_zip_nocovs <- loo(zip_ef_model_nocovs, moment_match = TRUE)
+
+loo_compare(output_nb, output_zipnb, output_nb_nocovs)
+
+start <- Sys.time()
+kfoldzip <- kfold(zip_ef_model, k = 10) # -59079.2	SE = 4751.4	
+#kfoldnb <- kfold(nb_ef_model, k = 10) # elpd_kfold	-6989.2	SE 72.7
+#kfoldzionb <- kfold(zipnb_ef_model, k = 10) # elpd_kfold	-6976.7	SE 72.6	
+#print(kfoldzip); print(kfoldnb); print(kfoldzionb)
+kfold_results <- list(zip = kfoldzip, nb = kfoldnb, zinb = kfoldzionb)
+saveRDS(kfold_results, "./models/kfold_results.rds")
+kfold_results <- readRDS("./models/kfold_results.rds")
+end <- Sys.time()
+total <- end - start
+
+kfold_results$zip
+kfold_results$nb
+kfold_results$zinb
+
+
+zipnb_ef_model <- add_criterion(zipnb_ef_model, "loo")
+nb_ef_model <- add_criterion(nb_ef_model, "loo")
+zip_ef_model <- add_criterion(zip_ef_model, "loo")
+
+loo_compare(zipnb_ef_model, nb_ef_model, zip_ef_model)
+
+
+summary(zip_ef_model)         
+#post:treatment = -0.04
+summary(nb_ef_model)          
+#post:treatment = -0.54
+summary(zip_ef_model_nocovs)
+#post:treatment =
+summary(nb_ef_model_nocovs)
+#post:treatment = -0.56
+summary(zipnb_ef_model)
+#post:treatment = -0.45
+
+bayes_R2(nb_ef_model)
+pp_check(nb_ef_model, ndraws = 100)
+pp_check(nb_ef_model, type='stat', stat='mean')
+pp_check(nb_ef_model, type='error_scatter_avg')
+
+bayes_R2(zipnb_ef_model)
+pp_check(zipnb_ef_model, ndraws = 100)
+pp_check(zipnb_ef_model, type='stat', stat='mean')
+pp_check(zipnb_ef_model, type='error_scatter_avg')
+```
+

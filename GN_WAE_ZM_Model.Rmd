@@ -155,8 +155,8 @@ dat <- final.dat3 %>%
   mutate(ZM_LAKE = ifelse(year_confirmed == 0, 0, 1),
          log_acres = log(acres),
          fry.pa = FRY/acres,
-         fgl.pa = FGL/acres)
-
+         fgl.pa = FGL/acres, 
+         offsets = log(total.effort.1))
 ```
 
 Create BACI design variables
@@ -196,24 +196,6 @@ test = dat %>%
 dat <- dat %>% filter(lake.id %in% test$lake.id)
 ```
 
-Prep for model
-
-```{r}
-# Create lake ID
-dat$lake.id <- as.numeric(as.factor(as.numeric(as.factor(dat$lake.id))))
-# Create year ID
-dat$year.id <- as.numeric(as.factor(as.numeric(as.factor(dat$year))))
-nyear <- length(unique(dat$year.id))
-
-# Sort data by site
-dat <- dat %>% 
-  arrange(lake.id)
-
-# Effort offset term (maybe multiply eff_seconds by the number_of_netters?)
-dat <- dat %>% 
-  mutate(offsets = log(total.effort.1))
-```
-
 Lake-level predictors
 
 ```{r}
@@ -250,7 +232,7 @@ m0 <-glmer(age3_count~ 1 + (1 | lake.id), data = dat, family = poisson(link = "l
 m1 <- glmer(age3_count ~ post + treatment + post*treatment + (1|lake.id), nAGQ = 100,
              data=dat, family = poisson(link="log"))
 #summary(m1)
-#performance::check_zeroinflation(m1)
+performance::check_zeroinflation(m1)
 ```
 
 Export data with correct number of observations and scaled variables
@@ -264,17 +246,9 @@ dat$fgl.pa_S <- fgl.pa
 ```
 
 
-Check that data is in correct form
-```{r}
-n_post <- max(post)
-n_trt <- max(x.treatment)
-n_lake <- max(dat$lake.id)
-n_year <- max(dat$year.id)
-```
 
-Load data; x = x; (dim(x)[2] + dim(x_obs)[2] + 1)
-
-```{r}
+# STAN Model
+```{r, eval = F}
 data <- list(y = dat$age3_count, lake = dat$lake.id, N = dim(dat)[1], 
              n_lake = n_lake, offsets=dat$offsets, 
              year = dat$year.id, n_year = n_year, n_post = n_post, n_trt = n_trt,
@@ -283,11 +257,7 @@ data <- list(y = dat$age3_count, lake = dat$lake.id, N = dim(dat)[1],
              survey_gdd_sum = gdd_sum, gdd = gdd2, 
              lake_area = lake_area2 
              ) 
-```
 
-
-# STAN Model
-```{r, eval = F}
 options(scipen = 999)
 out <- stan(file='./pois_model_zip3_GN.stan', data = data,
             iter = 50000, warmup = 20000, chains=4, thin=2, cores=4, refresh = 1)
@@ -320,7 +290,17 @@ dat_standardized <- dat %>%
   dplyr::select(lake.id, year, age3_count, offsets, total.effort.1, post, treatment, x, y, matches(to_keep))
 
 write.csv(dat_standardized, "./cleaned_data/gn_for_model.csv", row.names = F)
+dat_standardized <- read.csv("./cleaned_data/gn_for_model.csv")
 
+temp <- dat_standardized %>% group_by(lake.id) %>% count()
+median(temp$n)
+
+length(unique(temp$lake.id))
+min(dat_standardized$year); max(dat_standardized$year)
+```
+
+
+```{r}
 priors = c(
     prior(normal(0, 5), class = "Intercept"),
     prior(normal(0, 5), class = "b")
@@ -386,11 +366,12 @@ saveRDS(nb_gn_model_nocovs, "./models/nb_gn_model_nocovs_brms.rds")
 rm(nb_gn_model_nocovs)
 
 ### Zero inflated Negative Binomial with covariates
+### USED IN PAPER
 zipnb_gn_model <- 
   brm(age3_count ~ offset(offsets) + 
       post + treatment + post:treatment + fry + fingerling + 
       anomaly_gdd_5_s + median_gdd_5_s + 
-      lake_area_s + median_gdd_5_s +
+      lake_area_s + 
       (1 | year) +              
       (1 | lake.id), 
     family = zero_inflated_negbinomial(), data = dat_standardized, prior = priors,
@@ -442,7 +423,7 @@ pp_check(nb_gn_model, ndraws = 100)
 pp_check(nb_gn_model, type='stat', stat='mean')
 pp_check(nb_gn_model, type='error_scatter_avg')
 
-bayes_R2(zipnb_gn_model)
+bayes_R2(zipnb_gn_model) # 0.535
 pp_check(zipnb_gn_model, ndraws = 100)
 pp_check(zipnb_gn_model, type='stat', stat='mean')
 pp_check(zipnb_gn_model, type='error_scatter_avg')

@@ -223,7 +223,7 @@ new_surveys_secchi <- new_surveys_secchi %>% group_by(year, lake_id) %>%
 
 # Remove old objects
 ```{r}
-rm(new_surveys); rm(new_surveys_ais); rm(new_surveys_spatial); rm(new_surveys_stocking)
+rm(new_surveys); rm(new_surveys_ais); rm(new_surveys_spatial);
 rm(ais); rm(stocking); rm(mn_lakes);rm(efish_wae);
 rm(secchi.full); rm(secchi); rm(nhd.id)
 ```
@@ -285,8 +285,7 @@ model_surveys <- surveys_ef %>%
 yoy_ef <- model_surveys %>%
   select(!c(site_id, acres, shore_mi, infested))
 
-#
-write.csv(yoy_ef, "./cleaned_data/yoy_catch_data.csv", row.names = F)
+#write.csv(yoy_ef, "./cleaned_data/yoy_catch_data.csv", row.names = F)
 ```
 
 
